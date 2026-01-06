@@ -97,14 +97,15 @@ function logEvent(
 
 /**
  * Constant-time string comparison to prevent timing attacks.
- * Uses fixed iteration count to avoid leaking length information.
+ * Iterates over the longer string length (minimum 256) to avoid leaking length info.
  * Returns true if strings are equal, false otherwise.
  */
 function timingSafeEqual(a: string, b: string): boolean {
-  // Use fixed iteration count to prevent timing attacks from revealing length
-  const FIXED_LENGTH = 256;
+  // Iterate over max length to ensure all characters are compared
+  // Minimum 256 iterations to prevent timing analysis on short strings
+  const iterations = Math.max(a.length, b.length, 256);
   let result = a.length ^ b.length; // Non-zero if lengths differ
-  for (let i = 0; i < FIXED_LENGTH; i++) {
+  for (let i = 0; i < iterations; i++) {
     const charA = i < a.length ? a.charCodeAt(i) : 0;
     const charB = i < b.length ? b.charCodeAt(i) : 0;
     result |= charA ^ charB;
@@ -454,9 +455,8 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to delete dashboard: ${result.error}`);
         }
 
-        return toolResponse(
-          `Dashboard deleted successfully:\n${formatJson(result.data)}`,
-        );
+        const details = result.data ? `:\n${formatJson(result.data)}` : '';
+        return toolResponse(`Dashboard deleted successfully${details}`);
       },
     );
 
@@ -570,9 +570,8 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to delete data source: ${result.error}`);
         }
 
-        return toolResponse(
-          `Data source deleted successfully:\n${formatJson(result.data)}`,
-        );
+        const details = result.data ? `:\n${formatJson(result.data)}` : '';
+        return toolResponse(`Data source deleted successfully${details}`);
       },
     );
 
@@ -918,9 +917,8 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to delete folder: ${result.error}`);
         }
 
-        return toolResponse(
-          `Folder deleted successfully:\n${formatJson(result.data)}`,
-        );
+        const details = result.data ? `:\n${formatJson(result.data)}` : '';
+        return toolResponse(`Folder deleted successfully${details}`);
       },
     );
 
@@ -1022,9 +1020,8 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to delete annotation: ${result.error}`);
         }
 
-        return toolResponse(
-          `Annotation deleted successfully:\n${formatJson(result.data)}`,
-        );
+        const details = result.data ? `:\n${formatJson(result.data)}` : '';
+        return toolResponse(`Annotation deleted successfully${details}`);
       },
     );
 
@@ -1091,18 +1088,21 @@ function getCorsHeaders(env: Env): Record<string, string> {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
     'Access-Control-Max-Age': '86400',
+    Vary: 'Origin', // Ensure proper caching when origin varies
   };
 }
 
 function addCorsHeaders(response: Response, env: Env): Response {
   const corsHeaders = getCorsHeaders(env);
-  const newHeaders = new Headers(response.headers);
+  // Clone response to avoid consuming the body if it's already been read
+  const cloned = response.clone();
+  const newHeaders = new Headers(cloned.headers);
   Object.entries(corsHeaders).forEach(([key, value]) => {
     newHeaders.set(key, value);
   });
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
+  return new Response(cloned.body, {
+    status: cloned.status,
+    statusText: cloned.statusText,
     headers: newHeaders,
   });
 }
