@@ -90,9 +90,75 @@ npm run deploy
 
 ## Usage
 
-### Connecting from Claude Desktop
+### Generating Your API Key
 
-Add to your Claude Desktop config (`~/.config/claude-code/settings.json` or similar):
+Before connecting any client, generate a secure API key:
+
+```bash
+# Option 1: Using openssl (Linux/Mac)
+openssl rand -base64 32
+
+# Option 2: Using Python (cross-platform)
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Option 3: Using Node.js
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Save the generated key somewhere secure - you'll need it for both:
+1. Setting the `MCP_API_KEY` secret in Cloudflare (`wrangler secret put MCP_API_KEY`)
+2. Configuring your MCP client (Claude Code or Claude browser)
+
+---
+
+### Claude Code Setup
+
+The easiest way to add this MCP server to Claude Code:
+
+```bash
+claude mcp add grafana-cloud \
+  --transport sse \
+  --url https://YOUR-WORKER.workers.dev/sse \
+  --header "Authorization: Bearer YOUR_API_KEY"
+```
+
+Replace:
+- `YOUR-WORKER.workers.dev` with your deployed worker URL
+- `YOUR_API_KEY` with the API key you generated
+
+To verify it's working:
+```bash
+claude mcp list
+```
+
+To remove later:
+```bash
+claude mcp remove grafana-cloud
+```
+
+---
+
+### Claude Browser Setup (claude.ai)
+
+1. Go to [claude.ai](https://claude.ai) and open Settings
+2. Navigate to **Integrations** → **Model Context Protocol (MCP)**
+3. Click **Add MCP Server**
+4. Enter the following:
+   - **Name**: `grafana-cloud`
+   - **URL**: `https://YOUR-WORKER.workers.dev/sse`
+   - **Authentication**: Select "Bearer Token" and enter your API key
+
+The server will now be available in your Claude conversations. You can verify by asking Claude: "What Grafana tools do you have available?"
+
+---
+
+### Manual Configuration (Claude Desktop App)
+
+If you prefer manual configuration, add to your Claude Desktop config file:
+
+**Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+**Linux**: `~/.config/claude/claude_desktop_config.json`
 
 ```json
 {
@@ -101,19 +167,24 @@ Add to your Claude Desktop config (`~/.config/claude-code/settings.json` or simi
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://your-worker.your-subdomain.workers.dev/sse"
-      ],
-      "env": {
-        "MCP_API_KEY": "YOUR_MCP_API_KEY"
-      }
+        "https://YOUR-WORKER.workers.dev/sse",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
     }
   }
 }
 ```
 
-**Authentication:** The API key must be provided via HTTP headers (query parameters are not supported for security reasons - keys in URLs can leak via referer headers and server logs):
-- Header: `Authorization: Bearer YOUR_KEY`
-- Header: `X-API-Key: YOUR_KEY`
+---
+
+### Authentication Notes
+
+The API key must be provided via HTTP headers:
+- `Authorization: Bearer YOUR_KEY`
+- `X-API-Key: YOUR_KEY` (alternative)
+
+Query parameters are **not supported** for security reasons - keys in URLs leak via referer headers and server logs.
 
 ### Available Tools
 
