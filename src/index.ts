@@ -16,11 +16,22 @@ export interface Env {
   MCP_OBJECT: DurableObjectNamespace;
 }
 
-// Tool response helper
+/**
+ * Wraps a plain text message into the module's standard tool response object.
+ *
+ * @param content - The text message to include in the response
+ * @returns The tool response object containing a single text block: `{ content: [{ type: 'text', text: content }] }`
+ */
 function toolResponse(content: string) {
   return { content: [{ type: 'text' as const, text: content }] };
 }
 
+/**
+ * Produce a human-readable JSON string from a value using 2-space indentation.
+ *
+ * @param data - The value to serialize to JSON
+ * @returns The pretty-printed JSON string representation of `data`
+ */
 function formatJson(data: unknown): string {
   return JSON.stringify(data, null, 2);
 }
