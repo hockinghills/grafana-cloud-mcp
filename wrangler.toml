@@ -1,0 +1,39 @@
+# Grafana Cloud MCP Server
+# Deploy with: wrangler deploy
+
+name = "grafana-cloud-mcp"
+main = "src/index.ts"
+compatibility_date = "2025-01-02"
+compatibility_flags = ["nodejs_compat"]
+
+# OAuth requires Durable Objects for session management
+[[durable_objects.bindings]]
+name = "MCP_OBJECT"
+class_name = "GrafanaCloudMCP"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["GrafanaCloudMCP"]
+
+# KV namespace for OAuth token storage (create via: wrangler kv namespace create OAUTH_KV)
+# [[kv_namespaces]]
+# binding = "OAUTH_KV"
+# id = "<your-kv-namespace-id>"
+
+# Environment variables (set via wrangler secret)
+# GRAFANA_CLOUD_URL - Your Grafana Cloud instance URL (e.g., https://myorg.grafana.net)
+# GRAFANA_SERVICE_ACCOUNT_TOKEN - Your Grafana Cloud service account token
+
+# Development environment (for local testing with wrangler dev)
+[env.dev]
+name = "grafana-cloud-mcp-dev"
+
+[env.dev.vars]
+# Set these for local development, or use .dev.vars file
+# GRAFANA_CLOUD_URL = "https://your-org.grafana.net"
+
+# Production environment
+[env.production]
+name = "grafana-cloud-mcp"
+workers_dev = false
+# route = { pattern = "grafana-mcp.your-domain.com/*", zone_name = "your-domain.com" }
