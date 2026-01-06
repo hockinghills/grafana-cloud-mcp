@@ -35,7 +35,7 @@ export interface Target {
   refId: string;
   expr?: string;
   legendFormat?: string;
-  datasource?: { type: string; uid: string };
+  datasource?: { type?: string; uid: string };
 }
 
 export interface TemplateVariable {
