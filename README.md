@@ -133,6 +133,25 @@ claude mcp remove grafana-cloud
 
 ---
 
+### Claude Web (claude.ai)
+
+Claude web's custom connector feature requires OAuth authentication. This server currently uses API key authentication, which works with Claude Code and Claude Desktop but **not with Claude web**.
+
+To add support for Claude web, the server would need OAuth implementation using the `@cloudflare/workers-oauth-provider` package (already included as a dependency).
+
+**Current status:** Not supported - OAuth implementation needed.
+
+**To connect via Claude web when OAuth is implemented:**
+1. Go to [claude.ai](https://claude.ai) Settings → Connectors
+2. Click "Add custom connector"
+3. Enter the server URL: `https://YOUR-WORKER.workers.dev/sse`
+4. Click "Advanced settings" and enter your OAuth Client ID and Secret
+5. Complete the OAuth flow
+
+See [Cloudflare's Remote MCP Server guide](https://developers.cloudflare.com/agents/guides/remote-mcp-server/) for OAuth implementation details.
+
+---
+
 ### Claude Desktop App
 
 Add to your Claude Desktop config file:
