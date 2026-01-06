@@ -149,26 +149,29 @@ export class GrafanaClient {
     body?: unknown,
     timeoutMs = 30000
   ): Promise<ApiResponse<T>> {
-    try {
-      // Set up timeout with AbortController
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    // Set up timeout with AbortController
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+    try {
       // Filter undefined values from body to avoid API issues
       const cleanBody = body ? JSON.parse(JSON.stringify(body)) : undefined;
 
+      // Only include Content-Type header when there's a body
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${this.token}`,
+        'Accept': 'application/json',
+      };
+      if (cleanBody) {
+        headers['Content-Type'] = 'application/json';
+      }
+
       const response = await fetch(`${this.baseUrl}${path}`, {
         method,
-        headers: {
-          'Authorization': `Bearer ${this.token}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
+        headers,
         body: cleanBody ? JSON.stringify(cleanBody) : undefined,
         signal: controller.signal,
       });
-
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -220,6 +223,8 @@ export class GrafanaClient {
         success: false,
         error: 'Failed to connect to Grafana - please check your configuration',
       };
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -236,7 +241,7 @@ export class GrafanaClient {
   }
 
   async getDashboard(uid: string): Promise<ApiResponse<{ dashboard: Dashboard; meta: unknown }>> {
-    return this.request('GET', `/api/dashboards/uid/${encodeURIComponent(uid)}`);
+    return this.request<{ dashboard: Dashboard; meta: unknown }>('GET', `/api/dashboards/uid/${encodeURIComponent(uid)}`);
   }
 
   async createDashboard(
@@ -244,7 +249,7 @@ export class GrafanaClient {
     folderUid?: string,
     overwrite = false
   ): Promise<ApiResponse<{ uid: string; url: string; status: string }>> {
-    return this.request('POST', '/api/dashboards/db', {
+    return this.request<{ uid: string; url: string; status: string }>('POST', '/api/dashboards/db', {
       dashboard: {
         ...dashboard,
         id: null, // null for new dashboard
@@ -260,7 +265,7 @@ export class GrafanaClient {
     folderUid?: string,
     overwrite = true
   ): Promise<ApiResponse<{ uid: string; url: string; status: string }>> {
-    return this.request('POST', '/api/dashboards/db', {
+    return this.request<{ uid: string; url: string; status: string }>('POST', '/api/dashboards/db', {
       dashboard,
       folderUid,
       overwrite,
@@ -269,7 +274,7 @@ export class GrafanaClient {
   }
 
   async deleteDashboard(uid: string): Promise<ApiResponse<{ title: string }>> {
-    return this.request('DELETE', `/api/dashboards/uid/${encodeURIComponent(uid)}`);
+    return this.request<{ title: string }>('DELETE', `/api/dashboards/uid/${encodeURIComponent(uid)}`);
   }
 
   // ==================== Data Source Operations ====================
@@ -295,11 +300,11 @@ export class GrafanaClient {
   }
 
   async deleteDataSource(uid: string): Promise<ApiResponse<{ message: string }>> {
-    return this.request('DELETE', `/api/datasources/uid/${encodeURIComponent(uid)}`);
+    return this.request<{ message: string }>('DELETE', `/api/datasources/uid/${encodeURIComponent(uid)}`);
   }
 
   async testDataSource(uid: string): Promise<ApiResponse<{ status: string; message: string }>> {
-    return this.request('GET', `/api/datasources/uid/${encodeURIComponent(uid)}/health`);
+    return this.request<{ status: string; message: string }>('GET', `/api/datasources/uid/${encodeURIComponent(uid)}/health`);
   }
 
   // ==================== Alert Rule Operations ====================
@@ -361,7 +366,7 @@ export class GrafanaClient {
   }
 
   async deleteFolder(uid: string): Promise<ApiResponse<{ message: string }>> {
-    return this.request('DELETE', `/api/folders/${encodeURIComponent(uid)}`);
+    return this.request<{ message: string }>('DELETE', `/api/folders/${encodeURIComponent(uid)}`);
   }
 
   // ==================== Annotation Operations ====================
@@ -389,11 +394,11 @@ export class GrafanaClient {
     tags?: string[];
     text: string;
   }): Promise<ApiResponse<{ id: number; message: string }>> {
-    return this.request('POST', '/api/annotations', annotation);
+    return this.request<{ id: number; message: string }>('POST', '/api/annotations', annotation);
   }
 
   async deleteAnnotation(id: number): Promise<ApiResponse<{ message: string }>> {
-    return this.request('DELETE', `/api/annotations/${id}`);
+    return this.request<{ message: string }>('DELETE', `/api/annotations/${id}`);
   }
 
   // ==================== Query Operations ====================
@@ -405,7 +410,7 @@ export class GrafanaClient {
     instant?: boolean;
     range?: boolean;
   }[], from: number, to: number): Promise<ApiResponse<unknown>> {
-    return this.request('POST', '/api/ds/query', {
+    return this.request<unknown>('POST', '/api/ds/query', {
       queries,
       from: from.toString(),
       to: to.toString(),
@@ -415,10 +420,10 @@ export class GrafanaClient {
   // ==================== Health Check ====================
 
   async healthCheck(): Promise<ApiResponse<{ commit: string; database: string; version: string }>> {
-    return this.request('GET', '/api/health');
+    return this.request<{ commit: string; database: string; version: string }>('GET', '/api/health');
   }
 
   async getCurrentUser(): Promise<ApiResponse<{ login: string; email: string; name: string; orgId: number }>> {
-    return this.request('GET', '/api/user');
+    return this.request<{ login: string; email: string; name: string; orgId: number }>('GET', '/api/user');
   }
 }

@@ -19,15 +19,17 @@ export interface Env {
 
 /**
  * Constant-time string comparison to prevent timing attacks.
+ * Uses fixed iteration count to avoid leaking length information.
  * Returns true if strings are equal, false otherwise.
  */
 function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  // Use fixed iteration count to prevent timing attacks from revealing length
+  const FIXED_LENGTH = 256;
+  let result = a.length ^ b.length; // Non-zero if lengths differ
+  for (let i = 0; i < FIXED_LENGTH; i++) {
+    const charA = i < a.length ? a.charCodeAt(i) : 0;
+    const charB = i < b.length ? b.charCodeAt(i) : 0;
+    result |= charA ^ charB;
   }
   return result === 0;
 }

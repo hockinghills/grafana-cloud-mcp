@@ -94,15 +94,17 @@ Add to your Claude Desktop config (`~/.config/claude-code/settings.json` or simi
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://your-worker.your-subdomain.workers.dev/sse?api_key=YOUR_MCP_API_KEY"
-      ]
+        "https://your-worker.your-subdomain.workers.dev/sse"
+      ],
+      "env": {
+        "MCP_API_KEY": "YOUR_MCP_API_KEY"
+      }
     }
   }
 }
 ```
 
-**Authentication:** The API key can be provided via:
-- Query parameter: `?api_key=YOUR_KEY`
+**Authentication:** The API key must be provided via HTTP headers (query parameters are not supported for security reasons - keys in URLs can leak via referer headers and server logs):
 - Header: `Authorization: Bearer YOUR_KEY`
 - Header: `X-API-Key: YOUR_KEY`
 
