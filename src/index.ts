@@ -700,7 +700,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           text,
           dashboardUID: dashboard_uid,
           panelId: panel_id,
-          time: time || Date.now(),
+          time: time ?? Date.now(),
           timeEnd: time_end,
           tags,
         });
