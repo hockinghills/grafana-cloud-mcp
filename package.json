@@ -1,0 +1,22 @@
+{
+  "name": "grafana-cloud-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Grafana Cloud on Cloudflare Workers",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.0.5",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "agents": "^0.0.74",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.8.0",
+    "wrangler": "^3.101.0"
+  }
+}

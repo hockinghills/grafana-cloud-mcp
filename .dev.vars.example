@@ -1,0 +1,9 @@
+# Development environment variables for wrangler dev
+# Copy this file to .dev.vars and fill in your values
+
+# Your Grafana Cloud instance URL
+GRAFANA_CLOUD_URL=https://your-org.grafana.net
+
+# Your Grafana Cloud service account token
+# Create one at: https://your-org.grafana.net/org/serviceaccounts
+GRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
