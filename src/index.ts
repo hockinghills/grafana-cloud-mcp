@@ -18,6 +18,21 @@ export interface Env {
 }
 
 /**
+ * Constant-time string comparison to prevent timing attacks.
+ * Returns true if strings are equal, false otherwise.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+/**
  * Validates the API key from the request against the configured key.
  * Returns null if valid, or an error Response if invalid.
  */
@@ -32,14 +47,14 @@ function validateApiKey(request: Request, env: Env): Response | null {
   const authHeader = request.headers.get('Authorization');
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
-    if (token === env.MCP_API_KEY) {
+    if (timingSafeEqual(token, env.MCP_API_KEY)) {
       return null;
     }
   }
 
   // Check X-API-Key header
   const apiKeyHeader = request.headers.get('X-API-Key');
-  if (apiKeyHeader === env.MCP_API_KEY) {
+  if (apiKeyHeader && timingSafeEqual(apiKeyHeader, env.MCP_API_KEY)) {
     return null;
   }
 
@@ -71,11 +86,16 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
     version: '1.0.0',
   });
 
+  private _client?: GrafanaClient;
+
   private getClient(): GrafanaClient {
-    return new GrafanaClient({
-      baseUrl: this.env.GRAFANA_CLOUD_URL,
-      token: this.env.GRAFANA_SERVICE_ACCOUNT_TOKEN,
-    });
+    if (!this._client) {
+      this._client = new GrafanaClient({
+        baseUrl: this.env.GRAFANA_CLOUD_URL,
+        token: this.env.GRAFANA_SERVICE_ACCOUNT_TOKEN,
+      });
+    }
+    return this._client;
   }
 
   async init() {
@@ -720,16 +740,18 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
       },
       async ({ datasource_uid, expr, from, to, instant }) => {
         const now = Date.now();
+        const fromTs = from ?? (now - 3600000);
+        const toTs = to ?? now;
         const result = await client.queryMetrics(
           [{
             datasourceUid: datasource_uid,
             expr,
             refId: 'A',
-            instant: instant || false,
+            instant: !!instant,
             range: !instant,
           }],
-          from || now - 3600000,
-          to || now
+          fromTs,
+          toTs
         );
 
         if (!result.success) {

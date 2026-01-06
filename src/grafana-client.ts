@@ -146,9 +146,17 @@ export class GrafanaClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: unknown
+    body?: unknown,
+    timeoutMs = 30000
   ): Promise<ApiResponse<T>> {
     try {
+      // Set up timeout with AbortController
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      // Filter undefined values from body to avoid API issues
+      const cleanBody = body ? JSON.parse(JSON.stringify(body)) : undefined;
+
       const response = await fetch(`${this.baseUrl}${path}`, {
         method,
         headers: {
@@ -156,8 +164,11 @@ export class GrafanaClient {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-        body: body ? JSON.stringify(body) : undefined,
+        body: cleanBody ? JSON.stringify(cleanBody) : undefined,
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -193,6 +204,15 @@ export class GrafanaClient {
         };
       }
     } catch (error) {
+      // Handle timeout/abort errors
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.error(`[GRAFANA API] Request timeout for ${method} ${path}`);
+        return {
+          success: false,
+          error: 'Request timed out - Grafana may be slow or unreachable',
+        };
+      }
+
       // Log only the error type/message, not full stack which may leak info
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error(`[GRAFANA API] Request error for ${method} ${path}: ${errorMessage}`);
@@ -216,7 +236,7 @@ export class GrafanaClient {
   }
 
   async getDashboard(uid: string): Promise<ApiResponse<{ dashboard: Dashboard; meta: unknown }>> {
-    return this.request('GET', `/api/dashboards/uid/${uid}`);
+    return this.request('GET', `/api/dashboards/uid/${encodeURIComponent(uid)}`);
   }
 
   async createDashboard(
@@ -249,7 +269,7 @@ export class GrafanaClient {
   }
 
   async deleteDashboard(uid: string): Promise<ApiResponse<{ title: string }>> {
-    return this.request('DELETE', `/api/dashboards/uid/${uid}`);
+    return this.request('DELETE', `/api/dashboards/uid/${encodeURIComponent(uid)}`);
   }
 
   // ==================== Data Source Operations ====================
@@ -259,7 +279,7 @@ export class GrafanaClient {
   }
 
   async getDataSource(uid: string): Promise<ApiResponse<DataSource>> {
-    return this.request<DataSource>('GET', `/api/datasources/uid/${uid}`);
+    return this.request<DataSource>('GET', `/api/datasources/uid/${encodeURIComponent(uid)}`);
   }
 
   async getDataSourceByName(name: string): Promise<ApiResponse<DataSource>> {
@@ -271,15 +291,15 @@ export class GrafanaClient {
   }
 
   async updateDataSource(uid: string, dataSource: DataSource): Promise<ApiResponse<DataSource>> {
-    return this.request<DataSource>('PUT', `/api/datasources/uid/${uid}`, dataSource);
+    return this.request<DataSource>('PUT', `/api/datasources/uid/${encodeURIComponent(uid)}`, dataSource);
   }
 
   async deleteDataSource(uid: string): Promise<ApiResponse<{ message: string }>> {
-    return this.request('DELETE', `/api/datasources/uid/${uid}`);
+    return this.request('DELETE', `/api/datasources/uid/${encodeURIComponent(uid)}`);
   }
 
   async testDataSource(uid: string): Promise<ApiResponse<{ status: string; message: string }>> {
-    return this.request('GET', `/api/datasources/uid/${uid}/health`);
+    return this.request('GET', `/api/datasources/uid/${encodeURIComponent(uid)}/health`);
   }
 
   // ==================== Alert Rule Operations ====================
@@ -289,7 +309,7 @@ export class GrafanaClient {
   }
 
   async getAlertRule(uid: string): Promise<ApiResponse<AlertRule>> {
-    return this.request<AlertRule>('GET', `/api/v1/provisioning/alert-rules/${uid}`);
+    return this.request<AlertRule>('GET', `/api/v1/provisioning/alert-rules/${encodeURIComponent(uid)}`);
   }
 
   async createAlertRule(rule: AlertRule): Promise<ApiResponse<AlertRule>> {
@@ -297,11 +317,11 @@ export class GrafanaClient {
   }
 
   async updateAlertRule(uid: string, rule: AlertRule): Promise<ApiResponse<AlertRule>> {
-    return this.request<AlertRule>('PUT', `/api/v1/provisioning/alert-rules/${uid}`, rule);
+    return this.request<AlertRule>('PUT', `/api/v1/provisioning/alert-rules/${encodeURIComponent(uid)}`, rule);
   }
 
   async deleteAlertRule(uid: string): Promise<ApiResponse<void>> {
-    return this.request<void>('DELETE', `/api/v1/provisioning/alert-rules/${uid}`);
+    return this.request<void>('DELETE', `/api/v1/provisioning/alert-rules/${encodeURIComponent(uid)}`);
   }
 
   // ==================== Contact Point Operations ====================
@@ -315,11 +335,11 @@ export class GrafanaClient {
   }
 
   async updateContactPoint(uid: string, contactPoint: ContactPoint): Promise<ApiResponse<void>> {
-    return this.request<void>('PUT', `/api/v1/provisioning/contact-points/${uid}`, contactPoint);
+    return this.request<void>('PUT', `/api/v1/provisioning/contact-points/${encodeURIComponent(uid)}`, contactPoint);
   }
 
   async deleteContactPoint(uid: string): Promise<ApiResponse<void>> {
-    return this.request<void>('DELETE', `/api/v1/provisioning/contact-points/${uid}`);
+    return this.request<void>('DELETE', `/api/v1/provisioning/contact-points/${encodeURIComponent(uid)}`);
   }
 
   // ==================== Folder Operations ====================
@@ -329,7 +349,7 @@ export class GrafanaClient {
   }
 
   async getFolder(uid: string): Promise<ApiResponse<Folder>> {
-    return this.request<Folder>('GET', `/api/folders/${uid}`);
+    return this.request<Folder>('GET', `/api/folders/${encodeURIComponent(uid)}`);
   }
 
   async createFolder(folder: Folder): Promise<ApiResponse<Folder>> {
@@ -337,11 +357,11 @@ export class GrafanaClient {
   }
 
   async updateFolder(uid: string, folder: { title: string }): Promise<ApiResponse<Folder>> {
-    return this.request<Folder>('PUT', `/api/folders/${uid}`, folder);
+    return this.request<Folder>('PUT', `/api/folders/${encodeURIComponent(uid)}`, folder);
   }
 
   async deleteFolder(uid: string): Promise<ApiResponse<{ message: string }>> {
-    return this.request('DELETE', `/api/folders/${uid}`);
+    return this.request('DELETE', `/api/folders/${encodeURIComponent(uid)}`);
   }
 
   // ==================== Annotation Operations ====================
@@ -354,8 +374,8 @@ export class GrafanaClient {
   ): Promise<ApiResponse<unknown[]>> {
     const params = new URLSearchParams();
     if (dashboardUid) params.append('dashboardUID', dashboardUid);
-    if (from) params.append('from', from.toString());
-    if (to) params.append('to', to.toString());
+    if (from !== undefined) params.append('from', from.toString());
+    if (to !== undefined) params.append('to', to.toString());
     params.append('limit', limit.toString());
 
     return this.request<unknown[]>('GET', `/api/annotations?${params.toString()}`);
