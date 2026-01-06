@@ -133,23 +133,9 @@ claude mcp remove grafana-cloud
 
 ---
 
-### Claude Browser Setup (claude.ai)
+### Claude Desktop App
 
-1. Go to [claude.ai](https://claude.ai) and open Settings
-2. Navigate to **Integrations** → **Model Context Protocol (MCP)**
-3. Click **Add MCP Server**
-4. Enter the following:
-   - **Name**: `grafana-cloud`
-   - **URL**: `https://YOUR-WORKER.workers.dev/sse`
-   - **Authentication**: Select "Bearer Token" and enter your API key
-
-The server will now be available in your Claude conversations. You can verify by asking Claude: "What Grafana tools do you have available?"
-
----
-
-### Manual Configuration (Claude Desktop App)
-
-If you prefer manual configuration, add to your Claude Desktop config file:
+Add to your Claude Desktop config file:
 
 **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
