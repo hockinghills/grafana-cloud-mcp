@@ -204,7 +204,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
             title,
             tags,
             panels: dashboardPanels || [],
-            schemaVersion: 39,
+            // Let Grafana use its default schema version for compatibility
             timezone: 'browser',
           },
           folder_uid
@@ -220,7 +220,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_update_dashboard',
-      'Update an existing dashboard. Fetches current dashboard, applies changes, and saves.',
+      'Update an existing dashboard. Fetches current dashboard, applies changes, and saves. Note: This uses a fetch-modify-save pattern which may lose concurrent changes if another user modifies the dashboard between fetch and save.',
       {
         uid: z.string().describe('UID of the dashboard to update'),
         title: z.string().optional().describe('New dashboard title'),
@@ -239,7 +239,9 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
         }).optional().describe('Add a new panel to the dashboard'),
       },
       async ({ uid, title, tags, add_panel }) => {
-        // First, get the current dashboard
+        // NOTE: Race condition possible - if another user modifies the dashboard
+        // between our GET and POST, their changes will be overwritten.
+        // This is acceptable for MCP usage patterns but not for high-concurrency scenarios.
         const getResult = await client.getDashboard(uid);
         if (!getResult.success) {
           return toolResponse(`Failed to get dashboard: ${getResult.error}`);
@@ -454,13 +456,15 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
         for_duration: z.string().optional().describe('Duration before firing (e.g., "5m", "1h")'),
         datasource_uid: z.string().describe('UID of the data source to query'),
         query_expr: z.string().describe('Query expression (PromQL, LogQL, etc.)'),
+        query_time_range_seconds: z.number().optional().describe('Time range in seconds for the query lookback window (default: 600 = 10 minutes)'),
         threshold_value: z.number().describe('Threshold value for the alert'),
         threshold_operator: z.enum(['gt', 'lt', 'gte', 'lte', 'eq', 'neq']).describe('Threshold comparison operator'),
         labels: z.record(z.string()).optional().describe('Labels to add to the alert'),
         annotations: z.record(z.string()).optional().describe('Annotations (summary, description, runbook_url)'),
       },
-      async ({ title, folder_uid, rule_group, condition, for_duration, datasource_uid, query_expr, threshold_value, threshold_operator, labels, annotations }) => {
+      async ({ title, folder_uid, rule_group, condition, for_duration, datasource_uid, query_expr, query_time_range_seconds, threshold_value, threshold_operator, labels, annotations }) => {
         // Build the alert rule with query and condition
+        const timeRangeSeconds = query_time_range_seconds ?? 600;
         const rule = {
           title,
           folderUID: folder_uid,
@@ -475,7 +479,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
             {
               refId: 'A',
               queryType: '',
-              relativeTimeRange: { from: 600, to: 0 },
+              relativeTimeRange: { from: timeRangeSeconds, to: 0 },
               datasourceUid: datasource_uid,
               model: {
                 expr: query_expr,
@@ -764,10 +768,38 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
   }
 }
 
+// CORS headers for browser access (e.g., Claude browser interface)
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
+  'Access-Control-Max-Age': '86400',
+};
+
+function addCorsHeaders(response: Response): Response {
+  const newHeaders = new Headers(response.headers);
+  Object.entries(CORS_HEADERS).forEach(([key, value]) => {
+    newHeaders.set(key, value);
+  });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: newHeaders,
+  });
+}
+
 // Worker export
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // Handle CORS preflight requests
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: CORS_HEADERS,
+      });
+    }
 
     // MCP endpoints require authentication
     if (url.pathname === '/sse' || url.pathname === '/mcp') {
@@ -775,19 +807,20 @@ export default {
       const authError = validateApiKey(request, env);
       if (authError) {
         console.log(`[AUTH] Rejected request to ${url.pathname} - invalid API key`);
-        return authError;
+        return addCorsHeaders(authError);
       }
 
       console.log(`[MCP] Authorized connection to ${url.pathname}`);
       const id = env.MCP_OBJECT.idFromName('grafana-cloud-mcp');
       const stub = env.MCP_OBJECT.get(id);
-      return stub.fetch(request);
+      const response = await stub.fetch(request);
+      return addCorsHeaders(response);
     }
 
     // Health check endpoint
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({ status: 'ok', server: 'grafana-cloud-mcp' }), {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     }
 
@@ -829,10 +862,10 @@ export default {
           'grafana_query_metrics',
         ],
       }, null, 2), {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     }
 
-    return new Response('Not Found', { status: 404 });
+    return new Response('Not Found', { status: 404, headers: CORS_HEADERS });
   },
 };
