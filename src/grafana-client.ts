@@ -112,6 +112,37 @@ export class GrafanaClient {
     this.token = config.token;
   }
 
+  /**
+   * Sanitizes error messages to avoid leaking internal details.
+   * Maps HTTP status codes to user-friendly messages.
+   */
+  private sanitizeError(status: number, rawError: string): string {
+    // Map common HTTP errors to user-friendly messages
+    const statusMessages: Record<number, string> = {
+      400: 'Bad request - please check your input parameters',
+      401: 'Authentication failed - check your Grafana credentials',
+      403: 'Access denied - insufficient permissions',
+      404: 'Resource not found',
+      409: 'Conflict - resource already exists or version mismatch',
+      422: 'Invalid data - please check your input',
+      429: 'Rate limited - please try again later',
+      500: 'Grafana server error - please try again',
+      502: 'Grafana gateway error - please try again',
+      503: 'Grafana service unavailable - please try again',
+    };
+
+    const friendlyMessage = statusMessages[status];
+    if (friendlyMessage) {
+      // Log the raw error for debugging but return sanitized message
+      console.error(`[GRAFANA API] HTTP ${status}: ${rawError}`);
+      return friendlyMessage;
+    }
+
+    // For unknown errors, log raw but return generic message
+    console.error(`[GRAFANA API] HTTP ${status}: ${rawError}`);
+    return `Request failed (HTTP ${status})`;
+  }
+
   private async request<T>(
     method: string,
     path: string,
@@ -132,16 +163,41 @@ export class GrafanaClient {
         const errorText = await response.text();
         return {
           success: false,
-          error: `HTTP ${response.status}: ${errorText}`,
+          error: this.sanitizeError(response.status, errorText),
         };
       }
 
-      const data = await response.json() as T;
-      return { success: true, data };
+      // Handle empty responses (some DELETE operations return no body)
+      const contentLength = response.headers.get('content-length');
+      const contentType = response.headers.get('content-type');
+
+      if (contentLength === '0' || !contentType?.includes('application/json')) {
+        // Return success with undefined data for empty responses
+        return { success: true, data: undefined as T };
+      }
+
+      // Safely parse JSON
+      const text = await response.text();
+      if (!text || text.trim() === '') {
+        return { success: true, data: undefined as T };
+      }
+
+      try {
+        const data = JSON.parse(text) as T;
+        return { success: true, data };
+      } catch (parseError) {
+        console.error(`[GRAFANA API] JSON parse error for ${method} ${path}:`, parseError);
+        return {
+          success: false,
+          error: 'Invalid response from Grafana API',
+        };
+      }
     } catch (error) {
+      // Log the actual error for debugging
+      console.error(`[GRAFANA API] Request error for ${method} ${path}:`, error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Failed to connect to Grafana - please check your configuration',
       };
     }
   }

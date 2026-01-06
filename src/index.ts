@@ -13,7 +13,47 @@ import { GrafanaClient } from './grafana-client';
 export interface Env {
   GRAFANA_CLOUD_URL: string;
   GRAFANA_SERVICE_ACCOUNT_TOKEN: string;
+  MCP_API_KEY?: string; // Optional API key for endpoint authentication
   MCP_OBJECT: DurableObjectNamespace;
+}
+
+/**
+ * Validates the API key from the request against the configured key.
+ * Returns null if valid, or an error Response if invalid.
+ */
+function validateApiKey(request: Request, env: Env): Response | null {
+  // If no API key is configured, allow access (for development)
+  if (!env.MCP_API_KEY) {
+    console.warn('MCP_API_KEY not configured - endpoints are unprotected');
+    return null;
+  }
+
+  // Check Authorization header (Bearer token)
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    if (token === env.MCP_API_KEY) {
+      return null;
+    }
+  }
+
+  // Check X-API-Key header
+  const apiKeyHeader = request.headers.get('X-API-Key');
+  if (apiKeyHeader === env.MCP_API_KEY) {
+    return null;
+  }
+
+  // Check query parameter (for SSE connections that can't set headers easily)
+  const url = new URL(request.url);
+  const apiKeyParam = url.searchParams.get('api_key');
+  if (apiKeyParam === env.MCP_API_KEY) {
+    return null;
+  }
+
+  return new Response(JSON.stringify({ error: 'Unauthorized - invalid or missing API key' }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 // Tool response helper
@@ -709,8 +749,16 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Simple SSE endpoint for MCP
+    // MCP endpoints require authentication
     if (url.pathname === '/sse' || url.pathname === '/mcp') {
+      // Validate API key before allowing access
+      const authError = validateApiKey(request, env);
+      if (authError) {
+        console.log(`[AUTH] Rejected request to ${url.pathname} - invalid API key`);
+        return authError;
+      }
+
+      console.log(`[MCP] Authorized connection to ${url.pathname}`);
       const id = env.MCP_OBJECT.idFromName('grafana-cloud-mcp');
       const stub = env.MCP_OBJECT.get(id);
       return stub.fetch(request);

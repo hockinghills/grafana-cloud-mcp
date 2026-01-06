@@ -57,6 +57,16 @@ npm install
    # Enter your service account token
    ```
 
+3. **Set an API key for endpoint authentication (REQUIRED for production):**
+   ```bash
+   # Generate a secure API key
+   openssl rand -base64 32
+
+   # Set it as a secret
+   wrangler secret put MCP_API_KEY
+   # Enter your generated API key
+   ```
+
 ### Development
 
 ```bash
@@ -84,12 +94,17 @@ Add to your Claude Desktop config (`~/.config/claude-code/settings.json` or simi
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://your-worker.your-subdomain.workers.dev/sse"
+        "https://your-worker.your-subdomain.workers.dev/sse?api_key=YOUR_MCP_API_KEY"
       ]
     }
   }
 }
 ```
+
+**Authentication:** The API key can be provided via:
+- Query parameter: `?api_key=YOUR_KEY`
+- Header: `Authorization: Bearer YOUR_KEY`
+- Header: `X-API-Key: YOUR_KEY`
 
 ### Available Tools
 
@@ -157,9 +172,14 @@ The server implements the following Grafana Cloud API endpoints:
 
 ## Security
 
-- Service account tokens are stored as Cloudflare Worker secrets (encrypted at rest)
-- All API communication uses HTTPS
-- The MCP server only exposes operations you've granted permissions for
+- **API Key Authentication**: MCP endpoints (`/sse`, `/mcp`) require a valid API key
+- **Secrets Management**: All credentials are stored as Cloudflare Worker secrets (encrypted at rest)
+- **HTTPS Only**: All API communication uses HTTPS
+- **Error Sanitization**: Error messages are sanitized to prevent leaking internal details
+- **Audit Logging**: All authentication attempts and API operations are logged
+- **Least Privilege**: The MCP server only exposes operations you've granted permissions for
+
+⚠️ **Important**: Always set `MCP_API_KEY` in production. Without it, your Grafana instance is accessible to anyone who knows your Worker URL.
 
 ## License
 

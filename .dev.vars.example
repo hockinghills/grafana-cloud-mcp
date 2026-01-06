@@ -7,3 +7,7 @@ GRAFANA_CLOUD_URL=https://your-org.grafana.net
 # Your Grafana Cloud service account token
 # Create one at: https://your-org.grafana.net/org/serviceaccounts
 GRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# API key for authenticating MCP endpoint access (REQUIRED for production)
+# Generate a secure random string, e.g.: openssl rand -base64 32
+MCP_API_KEY=your-secure-api-key-here
