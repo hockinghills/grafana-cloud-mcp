@@ -43,23 +43,25 @@ npm install
 
 ### Configuration
 
-1. Set your Grafana Cloud credentials as secrets:
+1. **Create the KV namespace for OAuth token storage:**
    ```bash
-   wrangler secret put GRAFANA_CLOUD_URL
-   # Enter your Grafana Cloud URL (e.g., https://myorg.grafana.net)
-
-   wrangler secret put GRAFANA_SERVICE_ACCOUNT_TOKEN
-   # Enter your service account token
+   wrangler kv namespace create OAUTH_KV
+   ```
+   Copy the returned namespace ID and update `wrangler.toml`:
+   ```toml
+   [[kv_namespaces]]
+   binding = "OAUTH_KV"
+   id = "your-namespace-id-here"
    ```
 
-2. **Set an API key for endpoint authentication (REQUIRED):**
+2. **Set the cookie encryption key (REQUIRED):**
    ```bash
-   # Generate a secure API key
+   # Generate a secure key
    openssl rand -base64 32
 
    # Set it as a secret
-   wrangler secret put MCP_API_KEY
-   # Enter your generated API key
+   wrangler secret put COOKIE_ENCRYPTION_KEY
+   # Enter your generated key
    ```
 
 3. **(Optional) Restrict CORS origin:**
@@ -85,41 +87,36 @@ npm run deploy
 
 ## Usage
 
-### Generating Your API Key
+This server uses OAuth authentication - you'll enter your Grafana Cloud credentials (URL and service account token) during the OAuth flow when connecting from Claude.
 
-Before connecting any client, generate a secure API key:
+---
 
-```bash
-# Option 1: Using openssl (Linux/Mac)
-openssl rand -base64 32
+### Claude Web (claude.ai)
 
-# Option 2: Using Python (cross-platform)
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+Connect Claude to your Grafana Cloud via OAuth:
 
-# Option 3: Using Node.js
-node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-```
+1. Go to [claude.ai](https://claude.ai) → Settings → Integrations
+2. Click "Add Integration" or "Add custom connector"
+3. Enter the server URL: `https://YOUR-WORKER.workers.dev`
+4. Click "Connect" to start the OAuth flow
+5. Enter your Grafana Cloud URL and Service Account Token
+6. Once authenticated, Claude can manage your Grafana Cloud
 
-Save the generated key somewhere secure - you'll need it for both:
-1. Setting the `MCP_API_KEY` secret in Cloudflare (`wrangler secret put MCP_API_KEY`)
-2. Configuring your MCP client (Claude Code or Claude browser)
+Your Grafana credentials are validated against the Grafana API and then stored securely as an OAuth token.
 
 ---
 
 ### Claude Code Setup
 
-The easiest way to add this MCP server to Claude Code:
+Add this MCP server to Claude Code:
 
 ```bash
 claude mcp add grafana-cloud \
   --transport sse \
-  --url https://YOUR-WORKER.workers.dev/sse \
-  --header "Authorization: Bearer YOUR_API_KEY"
+  --url https://YOUR-WORKER.workers.dev/sse
 ```
 
-Replace:
-- `YOUR-WORKER.workers.dev` with your deployed worker URL
-- `YOUR_API_KEY` with the API key you generated
+When you first use the Grafana tools, you'll be prompted to complete the OAuth flow and enter your Grafana credentials.
 
 To verify it's working:
 ```bash
@@ -130,25 +127,6 @@ To remove later:
 ```bash
 claude mcp remove grafana-cloud
 ```
-
----
-
-### Claude Web (claude.ai)
-
-Claude web's custom connector feature requires OAuth authentication. This server currently uses API key authentication, which works with Claude Code and Claude Desktop but **not with Claude web**.
-
-To add support for Claude web, the server would need OAuth implementation using the `@cloudflare/workers-oauth-provider` package (already included as a dependency).
-
-**Current status:** Not supported - OAuth implementation needed.
-
-**To connect via Claude web when OAuth is implemented:**
-1. Go to [claude.ai](https://claude.ai) Settings → Connectors
-2. Click "Add custom connector"
-3. Enter the server URL: `https://YOUR-WORKER.workers.dev/sse`
-4. Click "Advanced settings" and enter your OAuth Client ID and Secret
-5. Complete the OAuth flow
-
-See [Cloudflare's Remote MCP Server guide](https://developers.cloudflare.com/agents/guides/remote-mcp-server/) for OAuth implementation details.
 
 ---
 
@@ -167,24 +145,16 @@ Add to your Claude Desktop config file:
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://YOUR-WORKER.workers.dev/sse",
-        "--header",
-        "Authorization: Bearer YOUR_API_KEY"
+        "https://YOUR-WORKER.workers.dev/sse"
       ]
     }
   }
 }
 ```
 
+On first use, you'll be prompted to complete the OAuth flow.
+
 ---
-
-### Authentication Notes
-
-The API key must be provided via HTTP headers:
-- `Authorization: Bearer YOUR_KEY`
-- `X-API-Key: YOUR_KEY` (alternative)
-
-Query parameters are **not supported** for security reasons - keys in URLs leak via referer headers and server logs.
 
 ### Available Tools
 
@@ -252,15 +222,14 @@ The server implements the following Grafana Cloud API endpoints:
 
 ## Security
 
-- **API Key Authentication**: MCP endpoints (`/sse`, `/mcp`) require a valid API key. The server fails closed - requests are rejected if `MCP_API_KEY` is not configured.
-- **Configurable CORS**: Set `ALLOWED_ORIGIN` to restrict which origins can access the API (defaults to `*` if not set)
-- **Secrets Management**: All credentials are stored as Cloudflare Worker secrets (encrypted at rest)
+- **OAuth Authentication**: All MCP connections use OAuth 2.1 with PKCE for secure authentication
+- **CSRF Protection**: OAuth flow includes CSRF token validation
+- **Secure Session Cookies**: OAuth state is bound to session cookies with `__Host-` prefix, `Secure`, `HttpOnly`, and `SameSite` attributes
+- **Credential Validation**: Grafana credentials are validated against the Grafana API before issuing tokens
+- **Encrypted Storage**: OAuth tokens and credentials are stored in Cloudflare KV (encrypted at rest)
 - **HTTPS Only**: All API communication uses HTTPS
 - **Error Sanitization**: Error messages are sanitized to prevent leaking internal details
-- **Timing-Safe Comparison**: API key validation uses constant-time comparison to prevent timing attacks
 - **Least Privilege**: The MCP server only exposes operations you've granted permissions for
-
-⚠️ **Important**: `MCP_API_KEY` is required. The server will return HTTP 500 if it's not configured.
 
 ## License
 

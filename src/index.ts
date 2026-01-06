@@ -1,175 +1,26 @@
 /**
  * Grafana Cloud MCP Server
  * A Cloudflare Workers-based MCP server for managing Grafana Cloud
+ * Supports OAuth authentication for Claude web and mcp-remote clients
  * @module grafana-cloud-mcp
  */
 
+import OAuthProvider from '@cloudflare/workers-oauth-provider';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { McpAgent } from 'agents/mcp';
 import { z } from 'zod';
 import { GrafanaClient } from './grafana-client';
+import {
+  GrafanaOAuthHandler,
+  type GrafanaProps,
+} from './grafana-oauth-handler';
 
 // Environment bindings type
 export interface Env {
-  GRAFANA_CLOUD_URL: string;
-  GRAFANA_SERVICE_ACCOUNT_TOKEN: string;
-  MCP_API_KEY?: string; // API key for endpoint authentication (required in production)
-  ALLOWED_ORIGIN?: string; // CORS origin (defaults to * if not set)
+  OAUTH_KV: KVNamespace;
+  COOKIE_ENCRYPTION_KEY: string;
+  ALLOWED_ORIGIN?: string;
   MCP_OBJECT: DurableObjectNamespace;
-}
-
-// Request context for audit logging
-interface RequestContext {
-  requestId: string;
-  timestamp: string;
-  clientType: 'browser' | 'terminal' | 'mobile' | 'unknown';
-  userAgent: string | null;
-  origin: string | null;
-  ip: string | null;
-  apiKeyPrefix: string | null; // First 8 chars of API key for identification
-}
-
-// Generate a unique request ID
-function generateRequestId(): string {
-  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-// Extract client type from User-Agent
-function getClientType(userAgent: string | null): RequestContext['clientType'] {
-  if (!userAgent) return 'unknown';
-  const ua = userAgent.toLowerCase();
-  if (ua.includes('mobile') || ua.includes('android') || ua.includes('iphone'))
-    return 'mobile';
-  if (
-    ua.includes('mozilla') ||
-    ua.includes('chrome') ||
-    ua.includes('safari') ||
-    ua.includes('firefox')
-  )
-    return 'browser';
-  if (
-    ua.includes('curl') ||
-    ua.includes('httpie') ||
-    ua.includes('node') ||
-    ua.includes('python')
-  )
-    return 'terminal';
-  return 'unknown';
-}
-
-// Extract request context for logging
-function getRequestContext(request: Request, apiKey?: string): RequestContext {
-  const userAgent = request.headers.get('User-Agent');
-  return {
-    requestId: generateRequestId(),
-    timestamp: new Date().toISOString(),
-    clientType: getClientType(userAgent),
-    userAgent,
-    origin: request.headers.get('Origin'),
-    ip:
-      request.headers.get('CF-Connecting-IP') ||
-      request.headers.get('X-Forwarded-For'),
-    apiKeyPrefix: apiKey ? `${apiKey.slice(0, 8)}...` : null,
-  };
-}
-
-// Structured JSON logging
-function logEvent(
-  level: 'info' | 'warn' | 'error',
-  event: string,
-  ctx: RequestContext,
-  details?: Record<string, unknown>,
-): void {
-  const logEntry = {
-    level,
-    event,
-    ...ctx,
-    ...details,
-  };
-  const logFn =
-    level === 'error'
-      ? console.error
-      : level === 'warn'
-        ? console.warn
-        : console.log;
-  logFn(JSON.stringify(logEntry));
-}
-
-/**
- * Constant-time string comparison to prevent timing attacks.
- * Iterates over the longer string length (minimum 256) to avoid leaking length info.
- * Returns true if strings are equal, false otherwise.
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  // Iterate over max length to ensure all characters are compared
-  // Minimum 256 iterations to prevent timing analysis on short strings
-  const iterations = Math.max(a.length, b.length, 256);
-  let result = a.length ^ b.length; // Non-zero if lengths differ
-  for (let i = 0; i < iterations; i++) {
-    const charA = i < a.length ? a.charCodeAt(i) : 0;
-    const charB = i < b.length ? b.charCodeAt(i) : 0;
-    result |= charA ^ charB;
-  }
-  return result === 0;
-}
-
-/**
- * Validates the API key from the request against the configured key.
- * Returns { error, apiKey } where error is null if valid, or a Response if invalid.
- * Fails closed: rejects all requests if MCP_API_KEY is not configured.
- */
-function validateApiKey(
-  request: Request,
-  env: Env,
-  ctx: RequestContext,
-): { error: Response | null; apiKey: string | null } {
-  // Fail closed: require API key to be configured
-  if (!env.MCP_API_KEY) {
-    logEvent('error', 'auth_misconfigured', ctx, {
-      reason: 'MCP_API_KEY not configured',
-    });
-    return {
-      error: new Response(
-        JSON.stringify({ error: 'Server misconfigured - API key not set' }),
-        {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        },
-      ),
-      apiKey: null,
-    };
-  }
-
-  // Check Authorization header (Bearer token)
-  const authHeader = request.headers.get('Authorization');
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    if (timingSafeEqual(token, env.MCP_API_KEY)) {
-      return { error: null, apiKey: token };
-    }
-  }
-
-  // Check X-API-Key header
-  const apiKeyHeader = request.headers.get('X-API-Key');
-  if (apiKeyHeader && timingSafeEqual(apiKeyHeader, env.MCP_API_KEY)) {
-    return { error: null, apiKey: apiKeyHeader };
-  }
-
-  // Note: Query parameter auth removed for security (keys leak in logs/referers)
-  logEvent('warn', 'auth_failed', ctx, {
-    reason: 'invalid or missing API key',
-  });
-
-  return {
-    error: new Response(
-      JSON.stringify({ error: 'Unauthorized - invalid or missing API key' }),
-      {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      },
-    ),
-    apiKey: null,
-  };
 }
 
 // Tool response helper
@@ -184,8 +35,13 @@ function formatJson(data: unknown): string {
 /**
  * Grafana Cloud MCP Server
  * Provides tools for managing dashboards, alerts, data sources, and more
+ * Credentials are provided via OAuth flow (stored in this.props)
  */
-export class GrafanaCloudMCP extends McpAgent<Env> {
+export class GrafanaCloudMCP extends McpAgent<
+  Env,
+  Record<string, never>,
+  GrafanaProps
+> {
   server = new McpServer({
     name: 'grafana-cloud-mcp',
     version: '1.0.0',
@@ -195,9 +51,13 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
   private getClient(): GrafanaClient {
     if (!this._client) {
+      // Use credentials from OAuth props
+      if (!this.props?.grafanaUrl || !this.props?.grafanaToken) {
+        throw new Error('Grafana credentials not available - OAuth required');
+      }
       this._client = new GrafanaClient({
-        baseUrl: this.env.GRAFANA_CLOUD_URL,
-        token: this.env.GRAFANA_SERVICE_ACCOUNT_TOKEN,
+        baseUrl: this.props.grafanaUrl,
+        token: this.props.grafanaToken,
       });
     }
     return this._client;
@@ -222,13 +82,12 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Health check failed: ${healthResult.error}`);
         }
 
-        let response = `Grafana Health Status:\n${formatJson(healthResult.data)}`;
-
-        if (userResult.success) {
-          response += `\n\nAuthenticated as:\n${formatJson(userResult.data)}`;
-        }
-
-        return toolResponse(response);
+        const status = {
+          health: healthResult.data,
+          user: userResult.success ? userResult.data : null,
+          grafanaUrl: this.props?.grafanaUrl,
+        };
+        return toolResponse(`Grafana Cloud Status:\n${formatJson(status)}`);
       },
     );
 
@@ -236,39 +95,70 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_list_dashboards',
-      'List all dashboards in Grafana Cloud. Optionally filter by query, tag, or folder.',
+      'List all dashboards in Grafana Cloud with optional filtering',
       {
         query: z
           .string()
           .optional()
           .describe('Search query to filter dashboards by title'),
-        tag: z.string().optional().describe('Filter dashboards by tag'),
         folder_uid: z
           .string()
           .optional()
           .describe('Filter dashboards by folder UID'),
+        tag: z
+          .array(z.string())
+          .optional()
+          .describe('Filter dashboards by tags'),
+        limit: z
+          .number()
+          .optional()
+          .describe('Maximum number of dashboards to return'),
       },
-      async ({ query, tag, folder_uid }) => {
-        const result = await client.listDashboards(query, tag, folder_uid);
+      async ({ query, folder_uid, tag, limit }) => {
+        // Use first tag only since API takes single tag
+        const firstTag = tag && tag.length > 0 ? tag[0] : undefined;
+        const result = await client.listDashboards(query, firstTag, folder_uid);
 
         if (!result.success) {
           return toolResponse(`Failed to list dashboards: ${result.error}`);
         }
 
-        const dashboards = (result.data as unknown[]) || [];
+        let dashboards = (result.data || []) as Array<{
+          uid: string;
+          title: string;
+          folderTitle?: string;
+          tags?: string[];
+          url: string;
+        }>;
+
+        // Apply client-side limit if specified
+        if (limit && dashboards.length > limit) {
+          dashboards = dashboards.slice(0, limit);
+        }
+
+        if (dashboards.length === 0) {
+          return toolResponse('No dashboards found matching the criteria.');
+        }
+
+        const summary = dashboards.map((d) => ({
+          uid: d.uid,
+          title: d.title,
+          folderTitle: d.folderTitle,
+          tags: d.tags,
+          url: d.url,
+        }));
+
         return toolResponse(
-          `Found ${dashboards.length} dashboards:\n${formatJson(result.data)}`,
+          `Found ${dashboards.length} dashboard(s):\n${formatJson(summary)}`,
         );
       },
     );
 
     this.server.tool(
       'grafana_get_dashboard',
-      'Get a specific dashboard by its UID, including all panels and configuration',
+      'Get a dashboard by its UID with full panel details',
       {
-        uid: z
-          .string()
-          .describe('The unique identifier (UID) of the dashboard'),
+        uid: z.string().describe('The UID of the dashboard to retrieve'),
       },
       async ({ uid }) => {
         const result = await client.getDashboard(uid);
@@ -289,39 +179,35 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
         folder_uid: z
           .string()
           .optional()
-          .describe('UID of the folder to place the dashboard in'),
-        tags: z
-          .array(z.string())
-          .optional()
-          .describe('Tags to apply to the dashboard'),
+          .describe('UID of the folder to create the dashboard in'),
+        tags: z.array(z.string()).optional().describe('Tags for the dashboard'),
         panels: z
           .array(
             z.object({
               type: z
                 .string()
-                .describe(
-                  'Panel type (e.g., timeseries, stat, gauge, table, logs)',
-                ),
+                .describe('Panel type (e.g., "timeseries", "stat", "gauge")'),
               title: z.string().describe('Panel title'),
               gridPos: z
                 .object({
-                  x: z.number().describe('X position (0-23)'),
-                  y: z.number().describe('Y position'),
-                  w: z.number().describe('Width (1-24)'),
-                  h: z.number().describe('Height'),
+                  x: z.number(),
+                  y: z.number(),
+                  w: z.number(),
+                  h: z.number(),
                 })
-                .describe('Panel grid position'),
-              datasource_uid: z.string().optional().describe('Data source UID'),
+                .describe('Panel position and size'),
               expr: z
                 .string()
                 .optional()
-                .describe(
-                  'Query expression (PromQL for Prometheus, LogQL for Loki, etc.)',
-                ),
+                .describe('PromQL/LogQL query expression'),
+              datasource_uid: z
+                .string()
+                .optional()
+                .describe('Data source UID to use'),
             }),
           )
           .optional()
-          .describe('Array of panels to add to the dashboard'),
+          .describe('Panel definitions'),
       },
       async ({ title, folder_uid, tags, panels }) => {
         const dashboardPanels = panels?.map((panel, index) => ({
@@ -345,10 +231,9 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
         const result = await client.createDashboard(
           {
             title,
-            tags,
+            tags: tags || [],
             panels: dashboardPanels || [],
-            // Let Grafana use its default schema version for compatibility
-            timezone: 'browser',
+            schemaVersion: 39,
           },
           folder_uid,
         );
@@ -365,7 +250,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_update_dashboard',
-      'Update an existing dashboard. Fetches current dashboard, applies changes, and saves. Note: This uses a fetch-modify-save pattern which may lose concurrent changes if another user modifies the dashboard between fetch and save.',
+      'Update an existing dashboard by UID',
       {
         uid: z.string().describe('UID of the dashboard to update'),
         title: z.string().optional().describe('New dashboard title'),
@@ -373,63 +258,67 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           .array(z.string())
           .optional()
           .describe('New tags (replaces existing)'),
-        add_panel: z
-          .object({
-            type: z.string().describe('Panel type'),
-            title: z.string().describe('Panel title'),
-            gridPos: z.object({
-              x: z.number(),
-              y: z.number(),
-              w: z.number(),
-              h: z.number(),
+        panels: z
+          .array(
+            z.object({
+              id: z
+                .number()
+                .optional()
+                .describe('Panel ID (for updating existing panels)'),
+              type: z.string().describe('Panel type'),
+              title: z.string().describe('Panel title'),
+              gridPos: z.object({
+                x: z.number(),
+                y: z.number(),
+                w: z.number(),
+                h: z.number(),
+              }),
+              expr: z.string().optional().describe('PromQL/LogQL query'),
+              datasource_uid: z.string().optional().describe('Data source UID'),
             }),
-            datasource_uid: z.string().optional(),
-            expr: z.string().optional(),
-          })
+          )
           .optional()
-          .describe('Add a new panel to the dashboard'),
+          .describe('New panel definitions (replaces existing panels)'),
       },
-      async ({ uid, title, tags, add_panel }) => {
-        // NOTE: Race condition possible - if another user modifies the dashboard
-        // between our GET and POST, their changes will be overwritten.
-        // This is acceptable for MCP usage patterns but not for high-concurrency scenarios.
-        const getResult = await client.getDashboard(uid);
-        if (!getResult.success) {
-          return toolResponse(`Failed to get dashboard: ${getResult.error}`);
+      async ({ uid, title, tags, panels }) => {
+        // First, fetch the existing dashboard
+        const existing = await client.getDashboard(uid);
+        if (!existing.success) {
+          return toolResponse(`Failed to fetch dashboard: ${existing.error}`);
         }
 
-        const dashboard = getResult.data?.dashboard;
+        const dashboard = existing.data?.dashboard;
         if (!dashboard) {
-          return toolResponse('Dashboard not found or data is missing');
+          return toolResponse('Dashboard not found');
         }
 
-        // Apply updates
+        // Update fields
         if (title) dashboard.title = title;
         if (tags) dashboard.tags = tags;
-
-        if (add_panel) {
-          const panels = dashboard.panels || [];
-          const maxId = panels.reduce((max, p) => Math.max(max, p.id || 0), 0);
-          panels.push({
-            id: maxId + 1,
-            type: add_panel.type,
-            title: add_panel.title,
-            gridPos: add_panel.gridPos,
-            targets: add_panel.expr
+        if (panels) {
+          dashboard.panels = panels.map((panel, index) => ({
+            id: panel.id ?? index + 1,
+            type: panel.type,
+            title: panel.title,
+            gridPos: panel.gridPos,
+            targets: panel.expr
               ? [
                   {
                     refId: 'A',
-                    expr: add_panel.expr,
-                    datasource: add_panel.datasource_uid
-                      ? { uid: add_panel.datasource_uid }
+                    expr: panel.expr,
+                    datasource: panel.datasource_uid
+                      ? { uid: panel.datasource_uid }
                       : undefined,
                   },
                 ]
               : undefined,
-          });
-          dashboard.panels = panels;
+          }));
         }
 
+        // Save with incremented version
+        // Note: This is a non-atomic read-modify-write operation.
+        // In a concurrent environment, another update could occur between
+        // our read and write, causing a version conflict.
         const result = await client.updateDashboard(dashboard);
 
         if (!result.success) {
@@ -444,7 +333,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_delete_dashboard',
-      'Delete a dashboard from Grafana Cloud',
+      'Delete a dashboard by its UID',
       {
         uid: z.string().describe('UID of the dashboard to delete'),
       },
@@ -473,7 +362,8 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to list data sources: ${result.error}`);
         }
 
-        const summary = result.data?.map((ds) => ({
+        const sources = result.data || [];
+        const summary = sources.map((ds) => ({
           uid: ds.uid,
           name: ds.name,
           type: ds.type,
@@ -481,14 +371,14 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
         }));
 
         return toolResponse(
-          `Found ${result.data?.length || 0} data sources:\n${formatJson(summary)}`,
+          `Found ${sources.length} data source(s):\n${formatJson(summary)}`,
         );
       },
     );
 
     this.server.tool(
       'grafana_get_datasource',
-      'Get detailed information about a specific data source',
+      'Get details of a specific data source by UID',
       {
         uid: z.string().describe('UID of the data source'),
       },
@@ -507,14 +397,15 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
       'grafana_create_datasource',
       'Create a new data source in Grafana Cloud',
       {
-        name: z.string().describe('Name for the data source'),
+        name: z.string().describe('Name of the data source'),
         type: z
           .string()
-          .describe(
-            'Data source type (e.g., prometheus, loki, elasticsearch, influxdb, mysql, postgres)',
-          ),
-        url: z.string().optional().describe('URL of the data source'),
-        access: z.enum(['proxy', 'direct']).optional().describe('Access mode'),
+          .describe('Type (e.g., "prometheus", "loki", "elasticsearch")'),
+        url: z.string().describe('URL of the data source'),
+        access: z
+          .enum(['proxy', 'direct'])
+          .optional()
+          .describe('Access mode (default: proxy)'),
         is_default: z
           .boolean()
           .optional()
@@ -559,7 +450,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_delete_datasource',
-      'Delete a data source from Grafana Cloud',
+      'Delete a data source by UID',
       {
         uid: z.string().describe('UID of the data source to delete'),
       },
@@ -577,7 +468,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_test_datasource',
-      'Test the connection and health of a data source',
+      'Test a data source connection',
       {
         uid: z.string().describe('UID of the data source to test'),
       },
@@ -598,7 +489,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_list_alert_rules',
-      'List all alert rules configured in Grafana Cloud',
+      'List all alert rules in Grafana Cloud',
       {},
       async () => {
         const result = await client.listAlertRules();
@@ -607,23 +498,16 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to list alert rules: ${result.error}`);
         }
 
-        const summary = result.data?.map((rule) => ({
-          uid: rule.uid,
-          title: rule.title,
-          folderUID: rule.folderUID,
-          ruleGroup: rule.ruleGroup,
-          isPaused: rule.isPaused,
-        }));
-
+        const rules = result.data || [];
         return toolResponse(
-          `Found ${result.data?.length || 0} alert rules:\n${formatJson(summary)}`,
+          `Found ${rules.length} alert rule(s):\n${formatJson(rules)}`,
         );
       },
     );
 
     this.server.tool(
       'grafana_get_alert_rule',
-      'Get detailed information about a specific alert rule',
+      'Get details of a specific alert rule',
       {
         uid: z.string().describe('UID of the alert rule'),
       },
@@ -781,7 +665,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_list_contact_points',
-      'List all alert notification contact points',
+      'List all notification contact points',
       {},
       async () => {
         const result = await client.listContactPoints();
@@ -790,36 +674,32 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to list contact points: ${result.error}`);
         }
 
+        const contacts = result.data || [];
         return toolResponse(
-          `Found ${result.data?.length || 0} contact points:\n${formatJson(result.data)}`,
+          `Found ${contacts.length} contact point(s):\n${formatJson(contacts)}`,
         );
       },
     );
 
     this.server.tool(
       'grafana_create_contact_point',
-      'Create a new alert notification contact point',
+      'Create a new notification contact point',
       {
-        name: z.string().describe('Name for the contact point'),
+        name: z.string().describe('Name of the contact point'),
         type: z
-          .enum([
-            'email',
-            'slack',
-            'pagerduty',
-            'webhook',
-            'teams',
-            'discord',
-            'opsgenie',
-            'victorops',
-          ])
-          .describe('Type of contact point'),
+          .string()
+          .describe(
+            'Type (e.g., "email", "slack", "pagerduty", "webhook", "teams")',
+          ),
         settings: z
           .record(z.unknown())
-          .describe('Contact point settings (varies by type)'),
+          .describe(
+            'Type-specific settings (e.g., { "addresses": "user@example.com" } for email)',
+          ),
         disable_resolve_message: z
           .boolean()
           .optional()
-          .describe('Disable sending resolve messages'),
+          .describe('Disable sending resolved notifications'),
       },
       async ({ name, type, settings, disable_resolve_message }) => {
         const result = await client.createContactPoint({
@@ -843,7 +723,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_delete_contact_point',
-      'Delete an alert notification contact point',
+      'Delete a notification contact point',
       {
         uid: z.string().describe('UID of the contact point to delete'),
       },
@@ -873,21 +753,28 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to list folders: ${result.error}`);
         }
 
+        const folders = result.data || [];
+        const summary = folders.map((f) => ({
+          uid: f.uid,
+          title: f.title,
+          parentUid: f.parentUid,
+        }));
+
         return toolResponse(
-          `Found ${result.data?.length || 0} folders:\n${formatJson(result.data)}`,
+          `Found ${folders.length} folder(s):\n${formatJson(summary)}`,
         );
       },
     );
 
     this.server.tool(
       'grafana_create_folder',
-      'Create a new folder for organizing dashboards and alerts',
+      'Create a new folder in Grafana Cloud',
       {
         title: z.string().describe('Folder title'),
         parent_uid: z
           .string()
           .optional()
-          .describe('UID of parent folder (for nested folders)'),
+          .describe('UID of the parent folder (for nested folders)'),
       },
       async ({ title, parent_uid }) => {
         const result = await client.createFolder({
@@ -907,7 +794,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_delete_folder',
-      'Delete a folder (and optionally its contents)',
+      'Delete a folder from Grafana Cloud',
       {
         uid: z.string().describe('UID of the folder to delete'),
       },
@@ -927,23 +814,23 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_list_annotations',
-      'List annotations, optionally filtered by dashboard',
+      'List annotations with optional filters',
       {
+        from: z
+          .number()
+          .optional()
+          .describe('Start time in epoch milliseconds'),
+        to: z.number().optional().describe('End time in epoch milliseconds'),
         dashboard_uid: z
           .string()
           .optional()
           .describe('Filter by dashboard UID'),
-        from: z
-          .number()
-          .optional()
-          .describe('Start time (Unix timestamp in ms)'),
-        to: z.number().optional().describe('End time (Unix timestamp in ms)'),
-        limit: z
-          .number()
-          .optional()
-          .describe('Maximum number of annotations to return'),
+        panel_id: z.number().optional().describe('Filter by panel ID'),
+        tags: z.array(z.string()).optional().describe('Filter by tags'),
+        limit: z.number().optional().describe('Maximum number of annotations'),
       },
-      async ({ dashboard_uid, from, to, limit }) => {
+      async ({ from, to, dashboard_uid, limit }) => {
+        // Note: panelId and tags filtering not supported by current API
         const result = await client.listAnnotations(
           dashboard_uid,
           from,
@@ -955,46 +842,43 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to list annotations: ${result.error}`);
         }
 
-        const annotations = (result.data as unknown[]) || [];
+        const annotations = result.data || [];
         return toolResponse(
-          `Found ${annotations.length} annotations:\n${formatJson(result.data)}`,
+          `Found ${annotations.length} annotation(s):\n${formatJson(annotations)}`,
         );
       },
     );
 
     this.server.tool(
       'grafana_create_annotation',
-      'Create an annotation on a dashboard to mark important events',
+      'Create a new annotation',
       {
-        text: z.string().describe('Annotation text/description'),
-        dashboard_uid: z
-          .string()
-          .optional()
-          .describe('Dashboard UID to attach annotation to'),
-        panel_id: z
-          .number()
-          .optional()
-          .describe('Panel ID within the dashboard'),
+        text: z.string().describe('Annotation text content'),
         time: z
           .number()
           .optional()
-          .describe('Annotation time (Unix timestamp in ms, defaults to now)'),
+          .describe('Time in epoch milliseconds (default: now)'),
         time_end: z
           .number()
           .optional()
-          .describe('End time for range annotation'),
+          .describe('End time for region annotation'),
+        dashboard_uid: z
+          .string()
+          .optional()
+          .describe('Associate with dashboard'),
+        panel_id: z.number().optional().describe('Associate with panel'),
         tags: z
           .array(z.string())
           .optional()
           .describe('Tags for the annotation'),
       },
-      async ({ text, dashboard_uid, panel_id, time, time_end, tags }) => {
+      async ({ text, time, time_end, dashboard_uid, panel_id, tags }) => {
         const result = await client.createAnnotation({
           text,
-          dashboardUID: dashboard_uid,
-          panelId: panel_id,
           time: time ?? Date.now(),
           timeEnd: time_end,
+          dashboardUID: dashboard_uid,
+          panelId: panel_id,
           tags,
         });
 
@@ -1010,7 +894,7 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_delete_annotation',
-      'Delete an annotation',
+      'Delete an annotation by ID',
       {
         id: z.number().describe('ID of the annotation to delete'),
       },
@@ -1030,49 +914,40 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 
     this.server.tool(
       'grafana_query_metrics',
-      'Execute a query against a data source to retrieve metrics data',
+      'Execute a metrics query against a Grafana data source',
       {
         datasource_uid: z.string().describe('UID of the data source to query'),
-        expr: z
-          .string()
-          .describe(
-            'Query expression (PromQL for Prometheus, LogQL for Loki, etc.)',
-          ),
+        expr: z.string().describe('Query expression (PromQL, LogQL, etc.)'),
         from: z
           .number()
           .optional()
-          .describe(
-            'Start time (Unix timestamp in ms, defaults to 1 hour ago)',
-          ),
+          .describe('Start time in epoch milliseconds (default: 1 hour ago)'),
         to: z
           .number()
           .optional()
-          .describe('End time (Unix timestamp in ms, defaults to now)'),
+          .describe('End time in epoch milliseconds (default: now)'),
         instant: z
           .boolean()
           .optional()
-          .describe('Execute as instant query (point in time)'),
+          .describe('Execute as instant query (default: false)'),
       },
       async ({ datasource_uid, expr, from, to, instant }) => {
         const now = Date.now();
-        const fromTs = from ?? now - 3600000;
-        const toTs = to ?? now;
         const result = await client.queryMetrics(
           [
             {
+              refId: 'A',
               datasourceUid: datasource_uid,
               expr,
-              refId: 'A',
-              instant: !!instant,
-              range: !instant,
+              instant,
             },
           ],
-          fromTs,
-          toTs,
+          from ?? now - 3600000, // 1 hour ago
+          to ?? now,
         );
 
         if (!result.success) {
-          return toolResponse(`Failed to query metrics: ${result.error}`);
+          return toolResponse(`Query failed: ${result.error}`);
         }
 
         return toolResponse(`Query results:\n${formatJson(result.data)}`);
@@ -1081,146 +956,17 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
   }
 }
 
-// CORS headers for browser access (e.g., Claude browser interface)
-// Use ALLOWED_ORIGIN env var to restrict, defaults to * if not set
-function getCorsHeaders(env: Env): Record<string, string> {
-  return {
-    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
-    'Access-Control-Max-Age': '86400',
-    Vary: 'Origin', // Ensure proper caching when origin varies
-  };
-}
-
-function addCorsHeaders(response: Response, env: Env): Response {
-  const corsHeaders = getCorsHeaders(env);
-  // Clone response to avoid consuming the body if it's already been read
-  const cloned = response.clone();
-  const newHeaders = new Headers(cloned.headers);
-  Object.entries(corsHeaders).forEach(([key, value]) => {
-    newHeaders.set(key, value);
-  });
-  return new Response(cloned.body, {
-    status: cloned.status,
-    statusText: cloned.statusText,
-    headers: newHeaders,
-  });
-}
-
-// Worker export
-export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    _ctx: ExecutionContext,
-  ): Promise<Response> {
-    const url = new URL(request.url);
-    const corsHeaders = getCorsHeaders(env);
-
-    // Create initial request context (without API key - we don't have it yet)
-    const reqCtx = getRequestContext(request);
-
-    // Handle CORS preflight requests
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: corsHeaders,
-      });
-    }
-
-    // MCP endpoints require authentication
-    if (url.pathname === '/sse' || url.pathname === '/mcp') {
-      // Validate API key before allowing access
-      const { error: authError, apiKey } = validateApiKey(request, env, reqCtx);
-
-      // Update context with API key prefix if we have one
-      if (apiKey) {
-        reqCtx.apiKeyPrefix = `${apiKey.slice(0, 8)}...`;
-      }
-
-      if (authError) {
-        logEvent('warn', 'request_rejected', reqCtx, {
-          path: url.pathname,
-          reason: 'auth_failed',
-        });
-        return addCorsHeaders(authError, env);
-      }
-
-      logEvent('info', 'request_authorized', reqCtx, { path: url.pathname });
-
-      const id = env.MCP_OBJECT.idFromName('grafana-cloud-mcp');
-      const stub = env.MCP_OBJECT.get(id);
-      const response = await stub.fetch(request);
-
-      logEvent('info', 'request_completed', reqCtx, {
-        path: url.pathname,
-        status: response.status,
-      });
-      return addCorsHeaders(response, env);
-    }
-
-    // Health check endpoint
-    if (url.pathname === '/health') {
-      logEvent('info', 'health_check', reqCtx);
-      return new Response(
-        JSON.stringify({ status: 'ok', server: 'grafana-cloud-mcp' }),
-        {
-          headers: { 'Content-Type': 'application/json', ...corsHeaders },
-        },
-      );
-    }
-
-    // Root endpoint with info
-    if (url.pathname === '/') {
-      return new Response(
-        JSON.stringify(
-          {
-            name: 'Grafana Cloud MCP Server',
-            version: '1.0.0',
-            description:
-              'MCP server for managing Grafana Cloud dashboards, alerts, data sources, and more',
-            endpoints: {
-              mcp: '/sse or /mcp',
-              health: '/health',
-            },
-            tools: [
-              'grafana_health_check',
-              'grafana_list_dashboards',
-              'grafana_get_dashboard',
-              'grafana_create_dashboard',
-              'grafana_update_dashboard',
-              'grafana_delete_dashboard',
-              'grafana_list_datasources',
-              'grafana_get_datasource',
-              'grafana_create_datasource',
-              'grafana_delete_datasource',
-              'grafana_test_datasource',
-              'grafana_list_alert_rules',
-              'grafana_get_alert_rule',
-              'grafana_create_alert_rule',
-              'grafana_delete_alert_rule',
-              'grafana_list_contact_points',
-              'grafana_create_contact_point',
-              'grafana_delete_contact_point',
-              'grafana_list_folders',
-              'grafana_create_folder',
-              'grafana_delete_folder',
-              'grafana_list_annotations',
-              'grafana_create_annotation',
-              'grafana_delete_annotation',
-              'grafana_query_metrics',
-            ],
-          },
-          null,
-          2,
-        ),
-        {
-          headers: { 'Content-Type': 'application/json', ...corsHeaders },
-        },
-      );
-    }
-
-    return new Response('Not Found', { status: 404, headers: corsHeaders });
+// Export OAuthProvider as the default handler
+// This wraps our MCP server with OAuth authentication
+export default new OAuthProvider({
+  apiHandlers: {
+    '/sse': GrafanaCloudMCP.serveSSE('/sse'),
+    '/mcp': GrafanaCloudMCP.serve('/mcp'),
   },
-};
+  // Hono apps are compatible with ExportedHandler - cast to satisfy type checker
+  // biome-ignore lint/suspicious/noExplicitAny: Required for Hono/OAuthProvider type compatibility
+  defaultHandler: GrafanaOAuthHandler as any,
+  authorizeEndpoint: '/authorize',
+  tokenEndpoint: '/token',
+  clientRegistrationEndpoint: '/register',
+});

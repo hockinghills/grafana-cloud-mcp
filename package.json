@@ -14,9 +14,10 @@
     "check": "npm run typecheck && npm run lint"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.0.5",
+    "@cloudflare/workers-oauth-provider": "^0.2.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "agents": "^0.3.3",
+    "hono": "^4.11.3",
     "zod": "^3.24.0"
   },
   "devDependencies": {

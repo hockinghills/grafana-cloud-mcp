@@ -17,10 +17,12 @@ class_name = "GrafanaCloudMCP"
 tag = "v1"
 new_classes = ["GrafanaCloudMCP"]
 
-# KV namespace for OAuth token storage (create via: wrangler kv namespace create OAUTH_KV)
-# [[kv_namespaces]]
-# binding = "OAUTH_KV"
-# id = "<your-kv-namespace-id>"
+# KV namespace for OAuth token storage
+# Create with: wrangler kv namespace create OAUTH_KV
+# Then update the id below with the returned namespace ID
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 
 # Environment variables (set via wrangler secret)
 # GRAFANA_CLOUD_URL - Your Grafana Cloud instance URL (e.g., https://myorg.grafana.net)
