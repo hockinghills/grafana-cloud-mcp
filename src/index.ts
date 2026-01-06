@@ -829,13 +829,14 @@ export class GrafanaCloudMCP extends McpAgent<
         tags: z.array(z.string()).optional().describe('Filter by tags'),
         limit: z.number().optional().describe('Maximum number of annotations'),
       },
-      async ({ from, to, dashboard_uid, limit }) => {
-        // Note: panelId and tags filtering not supported by current API
+      async ({ from, to, dashboard_uid, panel_id, tags, limit }) => {
         const result = await client.listAnnotations(
           dashboard_uid,
           from,
           to,
           limit,
+          panel_id,
+          tags,
         );
 
         if (!result.success) {

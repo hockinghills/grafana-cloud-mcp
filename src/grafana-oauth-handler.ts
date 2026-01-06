@@ -248,12 +248,17 @@ async function validateGrafanaCredentials(
   userId?: number;
   userName?: string;
 }> {
+  // Set up timeout with AbortController (10 second timeout)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
   try {
     const response = await fetch(`${baseUrl}/api/user`, {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
       },
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -283,11 +288,20 @@ async function validateGrafanaCredentials(
       userName: user.name || user.login,
     };
   } catch (error) {
+    // Handle timeout/abort errors
+    if (error instanceof Error && error.name === 'AbortError') {
+      return {
+        valid: false,
+        error: 'Connection timed out - Grafana may be slow or unreachable',
+      };
+    }
     console.error('Grafana validation error:', error);
     return {
       valid: false,
       error: 'Could not connect to Grafana - check your URL',
     };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

@@ -473,11 +473,20 @@ export class GrafanaClient {
     from?: number,
     to?: number,
     limit = 100,
+    panelId?: number,
+    tags?: string[],
   ): Promise<ApiResponse<unknown[]>> {
     const params = new URLSearchParams();
     if (dashboardUid) params.append('dashboardUID', dashboardUid);
     if (from !== undefined) params.append('from', from.toString());
     if (to !== undefined) params.append('to', to.toString());
+    if (panelId !== undefined) params.append('panelId', panelId.toString());
+    if (tags && tags.length > 0) {
+      // Grafana accepts multiple tags params
+      for (const tag of tags) {
+        params.append('tags', tag);
+      }
+    }
     params.append('limit', limit.toString());
 
     return this.request<unknown[]>(
