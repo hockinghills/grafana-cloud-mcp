@@ -18,6 +18,63 @@ export interface Env {
   MCP_OBJECT: DurableObjectNamespace;
 }
 
+// Request context for audit logging
+interface RequestContext {
+  requestId: string;
+  timestamp: string;
+  clientType: 'browser' | 'terminal' | 'mobile' | 'unknown';
+  userAgent: string | null;
+  origin: string | null;
+  ip: string | null;
+  apiKeyPrefix: string | null; // First 8 chars of API key for identification
+}
+
+// Generate a unique request ID
+function generateRequestId(): string {
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Extract client type from User-Agent
+function getClientType(userAgent: string | null): RequestContext['clientType'] {
+  if (!userAgent) return 'unknown';
+  const ua = userAgent.toLowerCase();
+  if (ua.includes('mobile') || ua.includes('android') || ua.includes('iphone')) return 'mobile';
+  if (ua.includes('mozilla') || ua.includes('chrome') || ua.includes('safari') || ua.includes('firefox')) return 'browser';
+  if (ua.includes('curl') || ua.includes('httpie') || ua.includes('node') || ua.includes('python')) return 'terminal';
+  return 'unknown';
+}
+
+// Extract request context for logging
+function getRequestContext(request: Request, apiKey?: string): RequestContext {
+  const userAgent = request.headers.get('User-Agent');
+  return {
+    requestId: generateRequestId(),
+    timestamp: new Date().toISOString(),
+    clientType: getClientType(userAgent),
+    userAgent,
+    origin: request.headers.get('Origin'),
+    ip: request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For'),
+    apiKeyPrefix: apiKey ? apiKey.slice(0, 8) + '...' : null,
+  };
+}
+
+// Structured JSON logging
+function logEvent(
+  level: 'info' | 'warn' | 'error',
+  event: string,
+  ctx: RequestContext,
+  details?: Record<string, unknown>
+): void {
+  const logEntry = {
+    level,
+    event,
+    ...ctx,
+    ...details,
+  };
+  const logFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+  logFn(JSON.stringify(logEntry));
+}
+
 /**
  * Constant-time string comparison to prevent timing attacks.
  * Uses fixed iteration count to avoid leaking length information.
@@ -37,17 +94,24 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 /**
  * Validates the API key from the request against the configured key.
- * Returns null if valid, or an error Response if invalid.
+ * Returns { error, apiKey } where error is null if valid, or a Response if invalid.
  * Fails closed: rejects all requests if MCP_API_KEY is not configured.
  */
-function validateApiKey(request: Request, env: Env): Response | null {
+function validateApiKey(
+  request: Request,
+  env: Env,
+  ctx: RequestContext
+): { error: Response | null; apiKey: string | null } {
   // Fail closed: require API key to be configured
   if (!env.MCP_API_KEY) {
-    console.error('[AUTH] MCP_API_KEY not configured - rejecting request');
-    return new Response(JSON.stringify({ error: 'Server misconfigured - API key not set' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    logEvent('error', 'auth_misconfigured', ctx, { reason: 'MCP_API_KEY not configured' });
+    return {
+      error: new Response(JSON.stringify({ error: 'Server misconfigured - API key not set' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      apiKey: null,
+    };
   }
 
   // Check Authorization header (Bearer token)
@@ -55,22 +119,26 @@ function validateApiKey(request: Request, env: Env): Response | null {
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     if (timingSafeEqual(token, env.MCP_API_KEY)) {
-      return null;
+      return { error: null, apiKey: token };
     }
   }
 
   // Check X-API-Key header
   const apiKeyHeader = request.headers.get('X-API-Key');
   if (apiKeyHeader && timingSafeEqual(apiKeyHeader, env.MCP_API_KEY)) {
-    return null;
+    return { error: null, apiKey: apiKeyHeader };
   }
 
   // Note: Query parameter auth removed for security (keys leak in logs/referers)
+  logEvent('warn', 'auth_failed', ctx, { reason: 'invalid or missing API key' });
 
-  return new Response(JSON.stringify({ error: 'Unauthorized - invalid or missing API key' }), {
-    status: 401,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  return {
+    error: new Response(JSON.stringify({ error: 'Unauthorized - invalid or missing API key' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+    apiKey: null,
+  };
 }
 
 // Tool response helper
@@ -802,8 +870,10 @@ function addCorsHeaders(response: Response, env: Env): Response {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-
     const corsHeaders = getCorsHeaders(env);
+
+    // Create initial request context (without API key - we don't have it yet)
+    const reqCtx = getRequestContext(request);
 
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
@@ -816,21 +886,31 @@ export default {
     // MCP endpoints require authentication
     if (url.pathname === '/sse' || url.pathname === '/mcp') {
       // Validate API key before allowing access
-      const authError = validateApiKey(request, env);
+      const { error: authError, apiKey } = validateApiKey(request, env, reqCtx);
+
+      // Update context with API key prefix if we have one
+      if (apiKey) {
+        reqCtx.apiKeyPrefix = apiKey.slice(0, 8) + '...';
+      }
+
       if (authError) {
-        console.log(`[AUTH] Rejected request to ${url.pathname} - invalid API key`);
+        logEvent('warn', 'request_rejected', reqCtx, { path: url.pathname, reason: 'auth_failed' });
         return addCorsHeaders(authError, env);
       }
 
-      console.log(`[MCP] Authorized connection to ${url.pathname}`);
+      logEvent('info', 'request_authorized', reqCtx, { path: url.pathname });
+
       const id = env.MCP_OBJECT.idFromName('grafana-cloud-mcp');
       const stub = env.MCP_OBJECT.get(id);
       const response = await stub.fetch(request);
+
+      logEvent('info', 'request_completed', reqCtx, { path: url.pathname, status: response.status });
       return addCorsHeaders(response, env);
     }
 
     // Health check endpoint
     if (url.pathname === '/health') {
+      logEvent('info', 'health_check', reqCtx);
       return new Response(JSON.stringify({ status: 'ok', server: 'grafana-cloud-mcp' }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
