@@ -691,11 +691,12 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
       }) => {
         // Build the alert rule with query and condition
         const timeRangeSeconds = query_time_range_seconds ?? 600;
+        const conditionRef = condition || 'C';
         const rule = {
           title,
           folderUID: folder_uid,
           ruleGroup: rule_group,
-          condition: condition || 'C',
+          condition: conditionRef,
           for: for_duration || '5m',
           labels: labels || {},
           annotations: annotations || {},
@@ -725,14 +726,14 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
               },
             },
             {
-              refId: 'C',
+              refId: conditionRef,
               queryType: '',
               relativeTimeRange: { from: 0, to: 0 },
               datasourceUid: '__expr__',
               model: {
                 type: 'threshold',
                 expression: 'B',
-                refId: 'C',
+                refId: conditionRef,
                 conditions: [
                   {
                     type: 'query',

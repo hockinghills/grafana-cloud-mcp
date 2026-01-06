@@ -11,3 +11,7 @@ GRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # API key for authenticating MCP endpoint access (REQUIRED for production)
 # Generate a secure random string, e.g.: openssl rand -base64 32
 MCP_API_KEY=your-secure-api-key-here
+
+# Optional: Restrict CORS to a specific origin (e.g., https://claude.ai)
+# Leave empty or remove to allow all origins (*)
+# ALLOWED_ORIGIN=https://claude.ai

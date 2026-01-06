@@ -43,12 +43,7 @@ npm install
 
 ### Configuration
 
-1. Create a KV namespace for OAuth (if using OAuth):
-   ```bash
-   wrangler kv namespace create OAUTH_KV
-   ```
-
-2. Set your Grafana Cloud credentials as secrets:
+1. Set your Grafana Cloud credentials as secrets:
    ```bash
    wrangler secret put GRAFANA_CLOUD_URL
    # Enter your Grafana Cloud URL (e.g., https://myorg.grafana.net)
@@ -57,7 +52,7 @@ npm install
    # Enter your service account token
    ```
 
-3. **Set an API key for endpoint authentication (REQUIRED):**
+2. **Set an API key for endpoint authentication (REQUIRED):**
    ```bash
    # Generate a secure API key
    openssl rand -base64 32
@@ -67,7 +62,7 @@ npm install
    # Enter your generated API key
    ```
 
-4. **(Optional) Restrict CORS origin:**
+3. **(Optional) Restrict CORS origin:**
    ```bash
    # By default, CORS allows any origin (*). To restrict to specific origins:
    wrangler secret put ALLOWED_ORIGIN
