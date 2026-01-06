@@ -37,5 +37,4 @@ name = "grafana-cloud-mcp-dev"
 name = "grafana-cloud-mcp"
 workers_dev = false
 # Configure your custom domain below:
-route = { pattern = "grafana-mcp.example.com/*", zone_name = "example.com" }
-# Replace example.com with your actual domain
+# route = { pattern = "grafana-mcp.your-domain.com/*", zone_name = "your-domain.com" }
