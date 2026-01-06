@@ -57,7 +57,7 @@ npm install
    # Enter your service account token
    ```
 
-3. **Set an API key for endpoint authentication (REQUIRED for production):**
+3. **Set an API key for endpoint authentication (REQUIRED):**
    ```bash
    # Generate a secure API key
    openssl rand -base64 32
@@ -65,6 +65,13 @@ npm install
    # Set it as a secret
    wrangler secret put MCP_API_KEY
    # Enter your generated API key
+   ```
+
+4. **(Optional) Restrict CORS origin:**
+   ```bash
+   # By default, CORS allows any origin (*). To restrict to specific origins:
+   wrangler secret put ALLOWED_ORIGIN
+   # Enter your allowed origin (e.g., https://claude.ai)
    ```
 
 ### Development
@@ -174,14 +181,15 @@ The server implements the following Grafana Cloud API endpoints:
 
 ## Security
 
-- **API Key Authentication**: MCP endpoints (`/sse`, `/mcp`) require a valid API key
+- **API Key Authentication**: MCP endpoints (`/sse`, `/mcp`) require a valid API key. The server fails closed - requests are rejected if `MCP_API_KEY` is not configured.
+- **Configurable CORS**: Set `ALLOWED_ORIGIN` to restrict which origins can access the API (defaults to `*` if not set)
 - **Secrets Management**: All credentials are stored as Cloudflare Worker secrets (encrypted at rest)
 - **HTTPS Only**: All API communication uses HTTPS
 - **Error Sanitization**: Error messages are sanitized to prevent leaking internal details
-- **Audit Logging**: All authentication attempts and API operations are logged
+- **Timing-Safe Comparison**: API key validation uses constant-time comparison to prevent timing attacks
 - **Least Privilege**: The MCP server only exposes operations you've granted permissions for
 
-⚠️ **Important**: Always set `MCP_API_KEY` in production. Without it, your Grafana instance is accessible to anyone who knows your Worker URL.
+⚠️ **Important**: `MCP_API_KEY` is required. The server will return HTTP 500 if it's not configured.
 
 ## License
 

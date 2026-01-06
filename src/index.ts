@@ -13,7 +13,8 @@ import { GrafanaClient } from './grafana-client';
 export interface Env {
   GRAFANA_CLOUD_URL: string;
   GRAFANA_SERVICE_ACCOUNT_TOKEN: string;
-  MCP_API_KEY?: string; // Optional API key for endpoint authentication
+  MCP_API_KEY?: string; // API key for endpoint authentication (required in production)
+  ALLOWED_ORIGIN?: string; // CORS origin (defaults to * if not set)
   MCP_OBJECT: DurableObjectNamespace;
 }
 
@@ -37,12 +38,16 @@ function timingSafeEqual(a: string, b: string): boolean {
 /**
  * Validates the API key from the request against the configured key.
  * Returns null if valid, or an error Response if invalid.
+ * Fails closed: rejects all requests if MCP_API_KEY is not configured.
  */
 function validateApiKey(request: Request, env: Env): Response | null {
-  // If no API key is configured, allow access (for development)
+  // Fail closed: require API key to be configured
   if (!env.MCP_API_KEY) {
-    console.warn('MCP_API_KEY not configured - endpoints are unprotected');
-    return null;
+    console.error('[AUTH] MCP_API_KEY not configured - rejecting request');
+    return new Response(JSON.stringify({ error: 'Server misconfigured - API key not set' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   // Check Authorization header (Bearer token)
@@ -61,7 +66,6 @@ function validateApiKey(request: Request, env: Env): Response | null {
   }
 
   // Note: Query parameter auth removed for security (keys leak in logs/referers)
-  // Use Bearer token or X-API-Key header instead
 
   return new Response(JSON.stringify({ error: 'Unauthorized - invalid or missing API key' }), {
     status: 401,
@@ -771,16 +775,20 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
 }
 
 // CORS headers for browser access (e.g., Claude browser interface)
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
-  'Access-Control-Max-Age': '86400',
-};
+// Use ALLOWED_ORIGIN env var to restrict, defaults to * if not set
+function getCorsHeaders(env: Env): Record<string, string> {
+  return {
+    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
+    'Access-Control-Max-Age': '86400',
+  };
+}
 
-function addCorsHeaders(response: Response): Response {
+function addCorsHeaders(response: Response, env: Env): Response {
+  const corsHeaders = getCorsHeaders(env);
   const newHeaders = new Headers(response.headers);
-  Object.entries(CORS_HEADERS).forEach(([key, value]) => {
+  Object.entries(corsHeaders).forEach(([key, value]) => {
     newHeaders.set(key, value);
   });
   return new Response(response.body, {
@@ -795,11 +803,13 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    const corsHeaders = getCorsHeaders(env);
+
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
-        headers: CORS_HEADERS,
+        headers: corsHeaders,
       });
     }
 
@@ -809,20 +819,20 @@ export default {
       const authError = validateApiKey(request, env);
       if (authError) {
         console.log(`[AUTH] Rejected request to ${url.pathname} - invalid API key`);
-        return addCorsHeaders(authError);
+        return addCorsHeaders(authError, env);
       }
 
       console.log(`[MCP] Authorized connection to ${url.pathname}`);
       const id = env.MCP_OBJECT.idFromName('grafana-cloud-mcp');
       const stub = env.MCP_OBJECT.get(id);
       const response = await stub.fetch(request);
-      return addCorsHeaders(response);
+      return addCorsHeaders(response, env);
     }
 
     // Health check endpoint
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({ status: 'ok', server: 'grafana-cloud-mcp' }), {
-        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
 
@@ -864,10 +874,10 @@ export default {
           'grafana_query_metrics',
         ],
       }, null, 2), {
-        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
 
-    return new Response('Not Found', { status: 404, headers: CORS_HEADERS });
+    return new Response('Not Found', { status: 404, headers: corsHeaders });
   },
 };
