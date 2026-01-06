@@ -43,12 +43,8 @@ function validateApiKey(request: Request, env: Env): Response | null {
     return null;
   }
 
-  // Check query parameter (for SSE connections that can't set headers easily)
-  const url = new URL(request.url);
-  const apiKeyParam = url.searchParams.get('api_key');
-  if (apiKeyParam === env.MCP_API_KEY) {
-    return null;
-  }
+  // Note: Query parameter auth removed for security (keys leak in logs/referers)
+  // Use Bearer token or X-API-Key header instead
 
   return new Response(JSON.stringify({ error: 'Unauthorized - invalid or missing API key' }), {
     status: 401,
@@ -128,7 +124,8 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to list dashboards: ${result.error}`);
         }
 
-        return toolResponse(`Found ${(result.data as unknown[]).length} dashboards:\n${formatJson(result.data)}`);
+        const dashboards = (result.data as unknown[]) || [];
+        return toolResponse(`Found ${dashboards.length} dashboards:\n${formatJson(result.data)}`);
       }
     );
 
@@ -658,7 +655,8 @@ export class GrafanaCloudMCP extends McpAgent<Env> {
           return toolResponse(`Failed to list annotations: ${result.error}`);
         }
 
-        return toolResponse(`Found ${(result.data as unknown[]).length} annotations:\n${formatJson(result.data)}`);
+        const annotations = (result.data as unknown[]) || [];
+        return toolResponse(`Found ${annotations.length} annotations:\n${formatJson(result.data)}`);
       }
     );
 

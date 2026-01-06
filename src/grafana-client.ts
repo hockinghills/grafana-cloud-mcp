@@ -116,7 +116,7 @@ export class GrafanaClient {
    * Sanitizes error messages to avoid leaking internal details.
    * Maps HTTP status codes to user-friendly messages.
    */
-  private sanitizeError(status: number, rawError: string): string {
+  private sanitizeError(status: number, _rawError: string): string {
     // Map common HTTP errors to user-friendly messages
     const statusMessages: Record<number, string> = {
       400: 'Bad request - please check your input parameters',
@@ -133,13 +133,13 @@ export class GrafanaClient {
 
     const friendlyMessage = statusMessages[status];
     if (friendlyMessage) {
-      // Log the raw error for debugging but return sanitized message
-      console.error(`[GRAFANA API] HTTP ${status}: ${rawError}`);
+      // Log only the status code, not raw error which may contain sensitive data
+      console.error(`[GRAFANA API] HTTP ${status}`);
       return friendlyMessage;
     }
 
-    // For unknown errors, log raw but return generic message
-    console.error(`[GRAFANA API] HTTP ${status}: ${rawError}`);
+    // For unknown errors, log status only and return generic message
+    console.error(`[GRAFANA API] HTTP ${status}`);
     return `Request failed (HTTP ${status})`;
   }
 
@@ -169,14 +169,14 @@ export class GrafanaClient {
 
       // Handle empty responses (some DELETE operations return no body)
       const contentLength = response.headers.get('content-length');
-      const contentType = response.headers.get('content-type');
 
-      if (contentLength === '0' || !contentType?.includes('application/json')) {
-        // Return success with undefined data for empty responses
+      // Only skip parsing if content-length explicitly says empty
+      if (contentLength === '0') {
         return { success: true, data: undefined as T };
       }
 
-      // Safely parse JSON
+      // Safely parse JSON - try to parse regardless of Content-Type header
+      // since some servers omit it even for valid JSON responses
       const text = await response.text();
       if (!text || text.trim() === '') {
         return { success: true, data: undefined as T };
@@ -185,16 +185,17 @@ export class GrafanaClient {
       try {
         const data = JSON.parse(text) as T;
         return { success: true, data };
-      } catch (parseError) {
-        console.error(`[GRAFANA API] JSON parse error for ${method} ${path}:`, parseError);
+      } catch {
+        // Don't log the raw text as it may contain sensitive data
         return {
           success: false,
           error: 'Invalid response from Grafana API',
         };
       }
     } catch (error) {
-      // Log the actual error for debugging
-      console.error(`[GRAFANA API] Request error for ${method} ${path}:`, error);
+      // Log only the error type/message, not full stack which may leak info
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`[GRAFANA API] Request error for ${method} ${path}: ${errorMessage}`);
       return {
         success: false,
         error: 'Failed to connect to Grafana - please check your configuration',
