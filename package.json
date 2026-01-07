@@ -4,6 +4,7 @@
   "description": "MCP server for managing Grafana Cloud on Cloudflare Workers",
   "type": "module",
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
@@ -23,6 +24,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",
     "@cloudflare/workers-types": "^4.20250109.0",
+    "patch-package": "^8.0.1",
     "typescript": "^5.8.0",
     "wrangler": "^4.0.0"
   },
