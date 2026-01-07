@@ -41,34 +41,43 @@ cd grafana-cloud-mcp
 npm install
 ```
 
+> **Note:** `npm audit` may report vulnerabilities in `@modelcontextprotocol/sdk`. These are patched locally via `patch-package` (applied automatically during install). The warnings appear because npm checks version numbers, not the actual patched code.
+
 ### Configuration
 
-1. **Create the KV namespace for OAuth token storage:**
+1. **KV namespaces (already configured):**
+
+   The repository includes pre-configured KV namespace IDs for OAuth token storage:
+   - Development: Used with `wrangler dev` and `npm run deploy`
+   - Production: Used with `npm run deploy -- --env production`
+
+   If you're forking this repo for your own use, create your own namespaces:
    ```bash
+   # Development namespace
    wrangler kv namespace create OAUTH_KV
+
+   # Production namespace (separate for data isolation)
+   wrangler kv namespace create OAUTH_KV --env production
    ```
-   Copy the returned namespace ID and update `wrangler.toml`:
-   ```toml
-   [[kv_namespaces]]
-   binding = "OAUTH_KV"
-   id = "your-namespace-id-here"
-   ```
+   Update `wrangler.toml` with the returned IDs.
 
 2. **Set the cookie encryption key (REQUIRED):**
    ```bash
    # Generate a secure key
    openssl rand -base64 32
 
-   # Set it as a secret
+   # Set it as a secret (for default environment)
    wrangler secret put COOKIE_ENCRYPTION_KEY
-   # Enter your generated key
+
+   # Also set for production if using --env production
+   wrangler secret put COOKIE_ENCRYPTION_KEY --env production
    ```
 
 3. **(Optional) Restrict CORS origin:**
    ```bash
    # By default, CORS allows any origin (*). To restrict to specific origins:
    wrangler secret put ALLOWED_ORIGIN
-   # Enter your allowed origin (e.g., https://claude.ai)
+   wrangler secret put ALLOWED_ORIGIN --env production  # if using production env
    ```
 
 ### Development
@@ -81,9 +90,17 @@ This starts a local development server at `http://localhost:8787`.
 
 ### Deployment
 
+**Development/default deployment:**
 ```bash
 npm run deploy
 ```
+
+**Production deployment (recommended):**
+```bash
+npm run deploy -- --env production
+```
+
+Production deployment uses a separate KV namespace to isolate OAuth tokens from development data.
 
 ## Usage
 
